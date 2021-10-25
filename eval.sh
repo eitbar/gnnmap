@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 python3 eval.py "./data/en-hr/new.gnn.wiki.30k.en-hr-aligned.EN.vec" "./data/en-hr/new.gnn.wiki.30k.en-hr-aligned.HR.vec" -d ./data/en-hr/yacle.test.freq.2k.en-hr.tsv --retrieval csls --cuda --model ./data/en-hr/new.gnn.en-hr.ENHR-model.pickle

@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=3 python3 dssm.py --train_dict data/dictionaries/en-es.0-5000.txt --val_dict data/dictionaries/en-es.5000-6500.txt  --in_src data/wiki.200k.en.vec --in_tar data/wiki.es.vec
