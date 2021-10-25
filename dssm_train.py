@@ -14,18 +14,10 @@ from random import randrange
 from art_wrapper import run_supervised_alignment
 from sklearn.utils import shuffle
 import math
-from wordfreq import word_frequency
 import textdistance
-from sklearn.model_selection import cross_val_score
 import torch
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 from tqdm import tqdm
 import random
-from sklearn.feature_selection import SelectKBest, chi2
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.neural_network import MLPClassifier
 from graph_utils import calc_csls_sim
 from new_dssm import Classifier as gnn_Classifier
 # src list of indexes from the source vocab to get neighbours for (these index the rows of X)
@@ -86,42 +78,7 @@ def get_NN(src, X, Z, num_NN, cuda = False, mode = "dense", batch_size = 100, re
       else:
         ret[src[i+k]] = ind
     print("Time taken " + str(time.time() - start_time))
-  return(ret)
-
-def get_1NNfast(src, X, Z, cuda = False, batch_size = 100, return_scores = True):
-  # get Z to the GPU once in the beginning (it can be big, seems like a waste to copy it again for every batch)
-  if cuda:
-    if not supports_cupy():
-      print("Error: Install CuPy for CUDA support", file=sys.stderr)
-      sys.exit(-1)
-    xp = get_cupy()
-    z = xp.asarray(Z)
-  else: # not cuda
-    z = Z
- 
-  nn_list = []
-  sims_list = []
-  for i in range(0, len(src), batch_size):
-    start_time = time.time()
-
-    j = min(i + batch_size, len(src))    
-    x_batch_slice = X[src[i:j]]
-    
-    # get the x part to the GPU if needed
-    if cuda:
-      x_batch_slice = xp.asarray(x_batch_slice)
-    
-    similarities = x_batch_slice.dot(z.T)
-    nn = (similarities).argmax(axis=1)
-    nn_list += nn.tolist()
-    if return_scores:
-      sims_list += similarities[np.array(range(similarities.shape[0])),nn].tolist()
-
-  if return_scores:
-    return dict(zip(src, zip(nn_list, sims_list)))
-  else:
-    return dict(zip(src, nn_list))
-       
+  return(ret)   
 
 # for each word in src_words computes the num_NN most similar by char ngram cosine, these are the candidate pairs (a total of len(src_words) x num_NN of them)
 # returns the candidate pairs sorted in descending order (but not all of them because this is still too much, rather num_output top candidates from the sorted list)
@@ -162,403 +119,10 @@ def precompute_orthographic_NN(src_words, tar_words, num_NN, num_output = 20000,
   ret = [(src_ind2w[k], tar_ind2w[v], c) for k,v,c in sorted_s]
   return(ret, d)
 
-
- 
-
-class FeatureCalculator():
-
-  def __init__(self, src_words, tar_words, src_embeddings, tar_embeddings, src_code, tar_code, ornn, args):
-    #self.char_tfidf = TfidfVectorizer(analyzer = "char", min_df = 1, ngram_range = (2,5)).fit(src_words + tar_words)
-    self.src_w2ind = {word: i for i, word in enumerate(src_words)}
-    self.tar_w2ind = {word: i for i, word in enumerate(tar_words)}
-    self.x = src_embeddings
-    self.z = tar_embeddings
-    self.src_code = src_code
-    self.tar_code = tar_code
-    
-    self.pca_s = PCA(n_components = 10)
-    self.pca_t = PCA(n_components = 10)
-
-    # PCA分析
-    self.x_pca = self.pca_s.fit_transform(cupy.asnumpy(self.x))
-    self.z_pca = self.pca_t.fit_transform(cupy.asnumpy(self.z))
-    self.ornn = ornn
-
-    # char级别的词袋模型
-    self.src_count_vect = CountVectorizer(ngram_range = (1,4), analyzer = "char")
-    self.tar_count_vect = CountVectorizer(ngram_range = (1,4), analyzer = "char")
-    #self.interaction = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False) 
-    self.kbest = SelectKBest(chi2, k = 10)
-    self.args = args
-
-  def update_embeddings(self, src_embeddings, tar_embeddings):
-    # 更新保存的embedding
-    # 更新pca结果
-    self.x = src_embeddings
-    self.z = tar_embeddings
-    self.x_pca = self.pca_s.fit_transform(cupy.asnumpy(self.x))
-    self.z_pca = self.pca_t.fit_transform(cupy.asnumpy(self.z))
-    
-  
-  def calc_features(self, word_pairs, labels, mode = "train"): # word_pairs should be a list of tuples and x and z numpy matrices representing the currently aligned embeddings
-    features = []
-    # default 0
-    if self.args.use_char_ngrams == 1:
-      src_words = [wp[0] for wp in word_pairs]
-      tar_words = [wp[1] for wp in word_pairs]
-      if mode == "train":
-        src_char_feats = self.src_count_vect.fit_transform(src_words)
-        tar_char_feats = self.tar_count_vect.fit_transform(tar_words)
-        print(src_char_feats.shape)
-        print(tar_char_feats.shape)
-        all_char_feats = sparse_hstack((src_char_feats, tar_char_feats))
-        #all_char_feats_inter  = self.interaction.fit_transform(all_char_feats)
-        all_char_feats_inter  = all_char_feats # no interaction, too slow
-        best_char_feats = self.kbest.fit_transform(all_char_feats_inter, labels)
-      elif mode == "test":
-        src_char_feats = self.src_count_vect.transform(src_words)
-        tar_char_feats = self.tar_count_vect.transform(tar_words)
-        all_char_feats = sparse_hstack((src_char_feats, tar_char_feats))
-        #all_char_feats_inter = self.interaction.transform(all_char_feats)
-        all_char_feats_inter = all_char_feats # no interaction, too slow
-        best_char_feats = self.kbest.transform(all_char_feats_inter)
-      
-      best_char_feats = best_char_feats.todense()
-      for i in range(best_char_feats.shape[1]):
-        features.append(list([x[0] for x in best_char_feats[:,i].tolist()]))
-
-
-    # default 1
-    # word_pairs即分类器的训练数据
-    # 一对word间得编辑距离放入features
-    if self.args.use_edit_dist == 1:
-      #print("Levensthein edit distance feats ...")
-      # Levensthein edit distance
-      levenshtein_feats = [textdistance.levenshtein.distance(sw, tw) for sw, tw in word_pairs]
-      features.append(levenshtein_feats)
-    
-      #print("Jaro Winkler edit distance feats ...")
-      # Jaro Winkler edit distance
-      jaro_feats = [textdistance.jaro.distance(sw, tw) for sw, tw in word_pairs]
-      features.append(jaro_feats)
-      
-      norm_lev_feats = [textdistance.levenshtein.distance(sw, tw)/np.mean([float(len(sw)), float(len(tw))]) for sw, tw in word_pairs]
-      features.append(norm_lev_feats)
-      
-      rank_lev_feats = [math.log(textdistance.levenshtein.distance(sw, tw) + 1) for sw, tw in word_pairs]
-      features.append(rank_lev_feats)    
-  
-      edit_combo_feats = [norm_lev_feats[i] + rank_lev_feats[i] for i in range(len(norm_lev_feats))]    
-      features.append(edit_combo_feats)    
-
-    # default 1
-    # embedding的cos相似度
-    if self.args.use_aligned_cosine == 1:
-      #print("Aligned embeddings cosine feats ...")
-      # cosine sim in the aligned embedding space
-      aligned_cosine_feats = []
-      for sw, tw in word_pairs:
-        swv = self.x[self.src_w2ind[sw],:]
-        twv = self.z[self.tar_w2ind[tw],:]
-        aligned_cosine_feats.append(swv.dot(twv.T).item())
-      features.append(aligned_cosine_feats)
-    # default 1
-    # pca分解后的cos相似度
-    if self.args.use_aligned_pca == 1:
-      src_pca_feats, tar_pca_feats = {}, {}     
-      for sw,tw in word_pairs:
-        swv = self.x_pca[self.src_w2ind[sw],:]
-        twv = self.z_pca[self.tar_w2ind[tw],:]
-        for i in range(swv.shape[0]):
-          if i not in src_pca_feats:
-            src_pca_feats[i] = []
-          src_pca_feats[i].append(swv[i])
-        for i in range(twv.shape[0]):
-          if i not in tar_pca_feats:
-            tar_pca_feats[i] = []
-          tar_pca_feats[i].append(twv[i])
-      for k in src_pca_feats:
-        features.append(src_pca_feats[k])
-      for k in tar_pca_feats:
-        features.append(tar_pca_feats[k])
-
-
-    # n-gram overlap
-    def find_ngrams(input_list, n):
-       return list(zip(*[input_list[i:] for i in range(n)]))
-    
-    # default 1
-    # 将n-gram的覆盖度也当作一种特征
-    if self.args.use_ngrams == 1:
-      for n in range(2, 6):
-        cngofeats_n = [] 
-        for sw, tw in word_pairs:
-          cns = find_ngrams([c for c in sw], n)
-          cnt = find_ngrams([c for c in tw], n)
-          # s1 是src_word的ngram个数，s2 是tgt word的ngram个数，s1s2是两个word的ngram交集
-          s1, s2, s1s2 = len(cns), len(cnt), len ([x for x in cns if x in cnt])
-
-          cngofeats_n.append((2 / (s1/s1s2 + s2/s1s2)) if s1s2 != 0 else 0)
-        features.append(cngofeats_n)
- 
-    # default 1
-    # 加入频率信息，由于embedding是按频率排序的，因此用id/vocb_size表示频率特征
-    if self.args.use_frequencies == 1:
-      #print("Calculating frequency features ...")
-      # word frequencies and word rankings in frequency sorted lists
-      src_freq_feats = []
-      tar_freq_feats = []
-      src_frank_feats = []
-      tar_frank_feats = []
-      for sw, tw in word_pairs:
-        src_frank_feats.append(float(self.src_w2ind[sw]) / len(self.src_w2ind))
-        tar_frank_feats.append(float(self.tar_w2ind[tw]) / len(self.tar_w2ind))
-      features.append(src_frank_feats)
-      features.append(tar_frank_feats)
-
-    return(np.array(features).T)
-
-
-class PoolerCNG:
-
-  def __init__(self, cache_filename, src_words, tar_words, src_code, tar_code,resort_func = None):
-    with(open(cache_filename, "rb")) as infile:
-      self.orth_candidates = pickle.load(infile)
-    if resort_func is not None:
-      self.orth_candidates = sorted(self.orth_candidates, key = lambda t:resort_func(t[0],t[1]), reverse = True)
-    # some data needed for frequency filtering later
-    FREQ_PERCENTILE = 0.05
-    self.src_threshold =  np.percentile([word_frequency(w, src_code) for w in src_words], FREQ_PERCENTILE)
-    self.tar_threshold = np.percentile([word_frequency(w, tar_code) for w in tar_words], FREQ_PERCENTILE)
-    self.src_code = src_code
-    self.tar_code = tar_code
-
-  def generate_candidates(self, current_word_pairs, N, x, z): # x and z are not used :P
-    # the list was already sorted during precomputing so no sorting here
-    current_word_pairs_hash = set([w1+w2 for w1,w2 in current_word_pairs])
-    candidates_filtered = [t for t in self.orth_candidates if t[0]+t[1] not in current_word_pairs_hash]
- 
-    # length filtering, i was not happy with the candidates obtained in this way so i moved to frequency filtering
-    #candidates_filtered = [t for t in candidates_filtered if len(t[0]) < 10 and len(t[1]) < 10]
-    #candidates_filtered = [t for t in candidates_filtered if word_frequency(t[0], self.src_code) > self.src_threshold and word_frequency(t[1], self.tar_code) > self.tar_threshold]
-
-    # TOP 0.05% by orthographic similarity then sort those by word freq
-    candidates_filtered = candidates_filtered[0:int(0.05 * len(candidates_filtered))]
-    candidates_filtered = sorted(candidates_filtered, key = lambda t: word_frequency(t[0], self.src_code) + word_frequency(t[1], self.tar_code), reverse = True)
-    candidates_filtered = [t for t in candidates_filtered if t[0].isalpha() and t[1].isalpha()]
-    return(candidates_filtered[0:N])
-
-
-class PoolerMNN:
-  def __init__(self, src_i2w, tar_i2w, src_w2i, tar_w2i, src_code, tar_code):
-    # 所有的单词
-    self.src_ind2w = src_i2w
-    self.tar_ind2w = tar_i2w
-    self.src_word2ind = src_w2i
-    self.tar_word2ind = tar_w2i
-    self.src_code = src_code
-    self.tar_code = tar_code
- 
-  def generate_candidates(self, current_word_pairs, N, src_vectors, tar_vectors):
-    # 当前的pos word pair
-    current_word_pairs_hash = set([w1+w2 for w1,w2 in current_word_pairs])
-    # 计算src -> tgt 和 tgt -> src 方向的最近邻
-    print("Calculating SRC - TAR NNs ...")
-    nn_s2t = get_1NNfast(list(range(len(self.src_ind2w))), src_vectors, tar_vectors, cuda = True, batch_size = 500, return_scores = True)
-    print("Calculating TAR - SRC NNs ...")
-    nn_t2s = get_1NNfast(list(range(len(self.tar_ind2w))), tar_vectors, src_vectors, cuda = True, batch_size = 500, return_scores = True)
-    
-    print("Sorting and recomputing cosines ...")
-    #word index is the key in the dicts and [0],[1] of the value tuple are the index of the nn and the score
-    # 把互为最近邻的单词放进candidates
-    candidates = [(sw,nn_s2t[sw][0],nn_s2t[sw][1]) for sw in nn_s2t if nn_t2s[nn_s2t[sw][0]][0] == sw] # the mutual nearest neighbours 
-
-    # 把index变成word
-    candidates_str = [(self.src_ind2w[k], self.tar_ind2w[v], c) for k,v,c in candidates] # turn indexes into words
-
-    # 必须全是英文字母，才放进candidates_str？
-    candidates_str = [t for t in candidates_str if t[0].isalpha() and t[1].isalpha()]
-
-    # 按照src_word频率 + tgt_word频率排序，取频率最高的
-    candidates_sorted = sorted(candidates_str, key = lambda  t: self.src_word2ind[t[0]] + self.tar_word2ind[t[1]]) # sort by frequency but approximated by ranks in fasttext files
-    # 去掉已经存在的pair
-    candidates_filtered = [t for t in candidates_sorted if t[0]+t[1] not in current_word_pairs_hash] # throw out candidates that are already being used
-    # 取topN
-    return(candidates_filtered[0:N])
-
-class PoolerMNNSubsampling:
-  def __init__(self, src_i2w, tar_i2w, src_w2i, tar_w2i, src_code, tar_code):
-    self.src_ind2w = src_i2w
-    self.tar_ind2w = tar_i2w
-    self.src_word2ind = src_w2i
-    self.tar_word2ind = tar_w2i
-    self.src_code = src_code
-    self.tar_code = tar_code
-    self.num_iter = 10
-    self.threshold = 9
-    self.subsample_percent = 0.9
-    self.pool_multiplier = 5
-
-  def generate_candidates(self, current_word_pairs, N, orig_src_vectors, orig_tar_vectors):
-    joint_dict = {}
-    for iter in range(self.num_iter):
-      # generate subsample aligned embeddings of size, say, 2*N
-      current_word_pairs_sample = list(random.sample(current_word_pairs, int(self.subsample_percent * len(current_word_pairs))))
-      src_indices = [self.src_word2ind[t[0]] for t in current_word_pairs_sample]
-      trg_indices = [self.tar_word2ind[t[1]] for t in current_word_pairs_sample]
-      src_words = list(self.src_word2ind.keys())
-      trg_words = list(self.tar_word2ind.keys())
-      print("Starting the Artetxe et al. alignment ...") 
-      src_vectors, tar_vectors = run_supervised_alignment(src_words, trg_words, orig_src_vectors, orig_tar_vectors, src_indices, trg_indices)    
-    
-      current_word_pairs_hash = set([w1+w2 for w1,w2 in current_word_pairs]) # we throw out all that are in the train dict not only those that are in the sample
-      # generate MNNs from those embeddings
-      print("Calculating SRC - TAR NNs ...")
-      nn_s2t = get_1NNfast(list(range(len(self.src_ind2w))), src_vectors, tar_vectors, cuda = True, batch_size = 500, return_scores = True)
-      print("Calculating TAR - SRC NNs ...")
-      nn_t2s = get_1NNfast(list(range(len(self.tar_ind2w))), tar_vectors, src_vectors, cuda = True, batch_size = 500, return_scores = True)
-      print("Sorting and recomputing cosines ...")
-      #word index is the key in the dicts and [0],[1] of the value tuple are the index of the nn and the score
-      candidates = [(sw,nn_s2t[sw][0],nn_s2t[sw][1]) for sw in nn_s2t if nn_t2s[nn_s2t[sw][0]][0] == sw] # the mutual nearest neighbours 
-      candidates_str = [(self.src_ind2w[k], self.tar_ind2w[v], c) for k,v,c in candidates] # turn indexes into words
-      candidates_str = [t for t in candidates_str if t[0].isalpha() and t[1].isalpha()]
-      candidates_sorted = sorted(candidates_str, key = lambda  t: self.src_word2ind[t[0]] + self.tar_word2ind[t[1]]) # sort by frequency but approximated by ranks in fasttext files
-      candidates_filtered = [t for t in candidates_sorted if t[0]+t[1] not in current_word_pairs_hash] # throw out candidates that are already being used
-      
-      # generate hash with how many times they appeared in each list
-      for sword, tword, score in candidates_filtered[0:self.pool_multiplier * N]:
-        c = (sword, tword)
-        joint_dict[c] = 1 if c not in joint_dict else joint_dict[c] + 1
-  
-    # discard all that are below the threshold 
-    ret_list = []
-    for c in joint_dict:
-      if joint_dict[c] >= self.threshold:
-        ret_list.append(c)
-    # sort the rest by sum of word indices in the fasttext files
-    ret_list_sorted = sorted(ret_list, key = lambda  t: self.src_word2ind[t[0]] + self.tar_word2ind[t[1]]) # sort by frequency but approximated by ranks in fasttext files
-    print(ret_list_sorted)
-    print(len(ret_list_sorted))
-    # return first N from the list (if less than N made it to the final list then error or warning)
-    return(ret_list_sorted[0:N])
-
-
-
-
-class PoolerCombined:
-  def __init__(self, pooler_list): # pooler list has tuples with 1) a pooler object and 2) the percentage of items that will be pooled from that pooler (number 0-1)
-    self.poolers = pooler_list
-  
-  def generate_candidates(self, current_word_pairs, N, x, z): 
-    all_candidates = []
-    for pooler, p in self.poolers:
-      candidates = pooler.generate_candidates(current_word_pairs, int(p*N), x, z)
-      all_candidates += candidates
-    return(all_candidates)
-
-
-
-class Classifier:
-  def __init__(self, feat_calc, sc):
-    self.fc = feat_calc  
-    self.scaler = StandardScaler()
-    self.scoring = sc
-  
-  def fit(self, pos_examples, neg_examples):
-    train_set = pos_examples + neg_examples
-    labs = [1]*len(pos_examples) + [0]*len(neg_examples)
-
-    print("Calculating features ...")
-    # 拿到feature
-    feats = self.fc.calc_features(train_set, labs, mode = "train")
-    # 标准化
-    feats = self.scaler.fit_transform(feats)
-    # 
-    feats, labs = shuffle(feats, labs)
-    feats, labs = np.array(feats), np.array(labs) 
-
- 
-    print("Crossvalidation ...")
-    # 在验证集上选择最好的h和alpha，当作最终的model
-    best_score, best_h, best_alpha =  -1000, None, None
-    for h in [3,5,10,20]:
-      for alpha in [0.0001,  0.01, 1]:
-        current_model = MLPClassifier(hidden_layer_sizes = (h,), early_stopping = True, alpha = alpha)
-        s = cross_val_score(estimator = current_model, X = feats, y = labs, cv = 3, scoring = self.scoring, n_jobs = -1)       
-        s = np.mean(s)
-        if s > best_score:
-          best_score, best_h, best_alpha = s, h, alpha
-    self.model = MLPClassifier(hidden_layer_sizes = (best_h,), early_stopping = True, alpha = best_alpha)
-    self.model.fit(feats, labs)
-
-    print("Crossval score of best model was " + str(best_score))
-
-  def predict(self, examples):
-    feats = self.fc.calc_features(examples, None, mode = "test") 
-    feats = self.scaler.transform(feats)
-    correct_col = 0 if self.model.classes_[0] == 1 else 1
-    retval = list(self.model.predict_proba(feats)[:,correct_col])
-    return(retval)
-
-
-
 # method can be "random", "hard" or "mix"
 # hard examples are wrong pairs that (in spite of being wrong) have high cosine
 # mix is half random half hard 
-def generate_negative_examples(positive_examples, src_w2ind, tar_w2ind, x, z, method = "random"): 
-  l = len(positive_examples)
-  if method == "mix":
-    num_rand, num_hard = math.floor(l / 2), math.ceil(l / 2) # floor/ceil so the sum is still == l
-  elif method == "random":
-    num_rand, num_hard = l, 0
-  elif method == "hard":
-    num_rand, num_hard = 0, l
-  else:
-    raise Exception("Unsupported method for negative sampling.")
 
-  rand_list, hard_list = [], []
-  positive_src = [t[0] for t in positive_examples]
-  positive_tar = [t[1] for t in positive_examples]
-
-  # generate the random examples (num_rand of them)
-  for i in range(num_rand):
-    success = False
-    while(not success):
-      src_ind, tar_ind = randrange(l), randrange(l)
-      if src_ind != tar_ind: # when the indexes are the same that is a positive example
-        rand_list.append((positive_src[src_ind], positive_tar[tar_ind]))
-        success = True
-   
-  # generate the hard examples (num_hard of them, or skip it if we dont need  them) 
-    
-  if num_hard > 0:
-    pos_src_word_indexes = [src_w2ind[i] for i in positive_src]
-    pos_tar_word_indexes = [tar_w2ind[i] for i in positive_tar]
-    pos_src_embeddings = x[pos_src_word_indexes,:]
-    pos_tar_embeddings = z[pos_tar_word_indexes,:]
-    print("Starting dot prod")
-    similarities = pos_src_embeddings.dot(pos_tar_embeddings.T)
-    print("Finished dot prod")
-    l = len(positive_src)
-
-    sflat = similarities.flatten()
-    sind = (-sflat).argsort()
-     
-    current = 0
-    for i in range(num_hard): # stupid but works fast enough, do n_hard argmaxes on the array (argmax is very fast and there will only ever be a few thousand of them needed)
-      success = False
-      while not success:
-        ind = sind[current].item()
-        current += 1
-        si, ti = int(ind / l), ind % l
-        if si != ti:
-          hard_list.append((positive_src[si], positive_tar[ti]))
-          success = True
-  
-  ret_list = rand_list + hard_list
-  shuffle(ret_list)  
-  return(ret_list)
- 
 class OrthoNNProvider():
   def __init__(self, path_to_file, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w):
     with(open(path_to_file, "rb")) as infile:
@@ -640,11 +204,8 @@ def calc_monolingual_adj(embedding, threshold=0, method='cos'):
   return adj
 
 
-def run_selflearning(args):
+def run_dssm_trainning(args):
   SL_start_time = time.time()
-  SELF_LEARNING_ITERATIONS = args.num_iterations
-  EXAMPLES_TO_POOL = args.examples_to_pool
-  EXAMPLES_TO_ADD = args.examples_to_add
   #neg_method = "hard"
   neg_top_k = 10
   neg_per_pos = 9
@@ -652,8 +213,6 @@ def run_selflearning(args):
 
   write_original = False
   use_classifier = args.use_classifier == 1  
-  #add_cng_pooler = False
-  use_mnns_pooler = args.use_mnns_pooler == 1
  
  
   task_name = args.src_lid + "-" + args.tar_lid + "-" + args.idstring
@@ -744,12 +303,9 @@ def run_selflearning(args):
   # 返回的是负例word pair的list
   # generate negative examples for the current 
   print("Generating negative examples ...")
-  #neg_examples = generate_negative_examples(pos_examples, src_word2ind, trg_word2ind, xw, zw, method = neg_method)
   neg_examples, src_w2negs =  generate_negative_examples_v2(pos_examples, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word, xw, zw, top_k = neg_top_k, num_neg_per_pos = neg_per_pos, num_neg_editdist = neg_editdist_per_pos, ornn = or_nn_provider)
 
   print("Training initial classifier ...")
-
-  print(torch.cuda.is_available())
 
   embeddings.normalize(xw, ['unit', 'center', 'unit'])
   embeddings.normalize(zw, ['unit', 'center', 'unit'])
@@ -766,13 +322,6 @@ def run_selflearning(args):
   val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
   model = gnn_Classifier(xw.shape[1], zw.shape[1], 300)
   model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set)
-  #result = model.predict(data)
-
-  #print(model.predict([("dog","pas"),("cat","sabor")]))
-  #exit()
-
-  if SELF_LEARNING_ITERATIONS == 0:
-    it = 0
 
   print("Writing output to files ...")
   # write res to disk
@@ -808,27 +357,10 @@ if __name__ == "__main__":
    parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)
    parser.add_argument('--idstring', type=str,  default="EXP", help='Special id string that will be included in all generated model and cache files. Default is EXP.')
 
-   parser.add_argument('--scoring', type=str,  default='f1_macro', help='Scoring type for the classifier, can be any string valid in sklearn. Default is f1_macro.')
-   parser.add_argument('--num_iterations', type=int,  default=10, help='Number of self learning iterations to run. Default is 10.')
-   parser.add_argument('--examples_to_pool', type=int,  default=5000, help='Number of examples to pool in each self learning iteration. Default is 5000.')
-   parser.add_argument('--examples_to_add', type=int,  default=500, help='Number of examples from the pool to add to the train set in each self learning iteration. Default is 500.')
-   parser.add_argument('--use_mnns_pooler', type=int,  default=0, help='Whether to MNN stochastic pooler instead of regular MNN pooler (1 for yes 0 for no). Default is 0.')
    parser.add_argument('--use_classifier', type=int,  default=1, help='Whether to use the classifier to rerank pooled candidates. Default is 1.')
-
-   parser.add_argument('--use_edit_dist', type=int,  default=1, help='Whether to use edit distance features (1 for yes 0 for no). Default is 1.')
-   parser.add_argument('--use_aligned_cosine', type=int,  default=1, help='Whether to use cosing distance in aligned space features (1 for yes 0 for no). Default is 1.')
-   parser.add_argument('--use_ngrams', type=int,  default=1, help='Whether to use ngram overlap features (1 for yes 0 for no). Default is 1.')
-   parser.add_argument('--use_full_bert', type=int,  default=0, help='Whether to use bert based features (1 for yes 0 for no). Default is 0.')
-   parser.add_argument('--use_pretrained_bpe', type=int,  default=0, help='Whether to use pretrained BPE features (1 for yes 0 for no). Default is 0.')
-   parser.add_argument('--use_frequencies', type=int,  default=1, help='Whether to use frequency features (1 for yes 0 for no). Default is 1.')
-   parser.add_argument('--use_aligned_pca', type=int,  default=1, help='Whether to use PCA reduced embeddings in the aligned space as features (1 for yes 0 for no). Default is 1.')
-   parser.add_argument('--use_char_ngrams', type=int,  default=0, help='Whether to use character ngrams as features (1 for yes 0 for no). Default is 0.')
-
    parser.add_argument('--art_supervision', type=str,  default="--supervised", help='Supervision argument to pass on to Artetxe et al. code. Default is "--supervised".')
-   parser.add_argument('--checkpoint_steps', type=int,  default=-1, help='A checkpoint will be saved every checkpoint_steps iterations. -1 to skip saving checkpoints. Default is -1.')
-
 
    args = parser.parse_args()
 
-   run_selflearning(args)
+   run_dssm_trainning(args)
 

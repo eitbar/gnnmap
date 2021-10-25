@@ -18,7 +18,7 @@ from transformers import WarmupLinearSchedule
 from torch.utils.data import DataLoader, Sampler, Dataset, SequentialSampler
 
 class DssmDatasets(Dataset):
-    def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_num=200):
+    def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_num=1000):
       self.lens = len(pos_examples)
       self.vocab_size = vocab_size 
       self.datas = self._build_dataset(pos_examples, src_w2negs)
@@ -76,8 +76,6 @@ class BaseTower(nn.Module):
         p_h = self.proj(h)
         return p_h
 
-# bpr loss
-
 class GDSSM(nn.Module):
     
     def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim):
@@ -101,7 +99,7 @@ class GDSSM(nn.Module):
 
 
 class Classifier:
-    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, device='gpu', epochs=200):
+    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, device='gpu', epochs=50):
         print(device == 'gpu')
         self.device = torch.device("cuda" if torch.cuda.is_available() and device == 'gpu' else "cpu")
         self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim)
@@ -134,8 +132,6 @@ class Classifier:
         tgt_x = tgt_x.to(self.device)
         tgt_a = tgt_a.to(self.device)
 
-        #val_src = [_[0] for _ in val_examples]
-        #val_tgts = [[_[1]] for _ in val_examples]
         val_src2tgts = collections.defaultdict(set)
         for s, t in val_examples:
           val_src2tgts[s].add(t)
@@ -146,8 +142,6 @@ class Classifier:
           train_src2tgts[s].add(t)
         train_src = list(set([_[0] for _ in pos_examples]))        
 
-        #val_src = torch.tensor(val_src, dtype=torch.long, device=self.device)
-        #val_tgts = torch.tensor(val_tgts, dtype=torch.long, device=self.device)
 
         train_dataset = DssmDatasets(pos_examples, src_w2negs)
         train_dataloader = DataLoader(train_dataset, 
@@ -174,11 +168,6 @@ class Classifier:
                 labels_index = labels_index.to(self.device)
 
                 logits = model(src_x, src_a, tgt_x, tgt_a, src_index, tgts_index)
-                #print(logits)
-                # Compute loss
-                # Note that you should only compute the losses of the nodes in the training set.
-                # bs * (1 + n)
-                # bs * 1
                 loss = loss_func(logits)
 
                 loss.backward()
@@ -213,13 +202,6 @@ class Classifier:
                   if len(pred_src2tgts[s] & val_src2tgts[s]) > 0:
                     count += 1
                 print(f'top_{k} acc: {count / len(val_src)}')
-
-
-
-            #with torch.no_grad():
-              #val_logits = model(src_x, src_a, tgt_x, tgt_a, val_src, val_tgts)
-              #val_logits = val_logits.squeeze() > 0
-              #print('In epoch {}, val acc: {}'.format(e, val_logits.float().mean()))
               
 
     def predict(self, src_x, src_a, tgt_x, tgt_a, test_src, src2tgts_list=None):
