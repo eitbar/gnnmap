@@ -91,6 +91,21 @@ def supervised_reranking(translations, model_filename, si2w, ti2w, sw2i, tw2i, K
       print("*********************")
   return(ret)
 
+def calc_monolingual_adj(embedding, threshold=0, method='cos'):
+  if method == 'cos':
+    adj = embedding.dot(embedding.T)
+  elif method == 'csls':
+    adj = calc_csls_sim(embedding, embedding, 10, True)
+  else:
+    adj = None
+
+  _mask = adj > threshold
+  print(_mask.sum())
+  adj = adj * _mask
+
+  return adj
+
+
 def supervised_reranking2(translations, model_filename, x, z, si2w, ti2w, sw2i, tw2i, K, correct_trans, thr, ornn, numor):
   with(open(model_filename, "rb")) as infile:
     model = pickle.load(infile)
@@ -99,12 +114,13 @@ def supervised_reranking2(translations, model_filename, x, z, si2w, ti2w, sw2i, 
   # exit(0)
   embeddings.normalize(x, ['unit', 'center', 'unit'])
   embeddings.normalize(z, ['unit', 'center', 'unit'])
-  x_sim = x.dot(x.T)
-  z_sim = z.dot(z.T)
-  torch_xw = torch.from_numpy(asnumpy(x))
-  torch_zw = torch.from_numpy(asnumpy(z))
-  torch_x_sim = torch.from_numpy(asnumpy(x_sim))
-  torch_z_sim = torch.from_numpy(asnumpy(z_sim))
+  x_adj = calc_monolingual_adj(x, 0.5)
+  z_adj = calc_monolingual_adj(z, 0.5)
+  with torch.no_grad():
+    torch_xw = torch.from_numpy(asnumpy(x))
+    torch_zw = torch.from_numpy(asnumpy(z))
+    torch_x_adj = torch.from_numpy(asnumpy(x_adj))
+    torch_z_adj = torch.from_numpy(asnumpy(z_adj))
 #  print("Applying classifier")
   num_iter = 0
   ret = dict()
@@ -130,22 +146,15 @@ def supervised_reranking2(translations, model_filename, x, z, si2w, ti2w, sw2i, 
       print("Src word:" + si2w[sw])
       print("Translations before:" + str([ti2w[x] for x in candidate_tar_words]))
     #print(candidate_tar_words)
-    test_set = [(sw, tw) for tw in candidate_tar_words]
-    """
-    test_set = [[sw2i[_s] for _s, _t in test_set], [tw2i[_t] for _s, _t in test_set] ]
-    with torch.no_grad():
-      data = {
-          'test_x': torch.tensor(test_set, dtype=torch.long),
-      }
-    """
-    scores = model.predict(torch_xw, torch_x_sim, torch_zw, torch_z_sim, test_set)
+    test_src = [sw]
+    test_src2tgts = {}
+    test_src2tgts[sw] = candidate_tar_words
+
+    scores = model.predict(torch_xw, torch_x_adj, torch_zw, torch_z_adj, test_src, test_src2tgts)
     tw_scores = scores.cpu().detach().numpy().tolist()
     print(tw_scores)
+    tw_scores = tw_scores[0]
 
-
-    #tw_scores = model.predict(data)
-    #tw_scores = [1.0 / (1.0 + math.exp(-x)) for x in tw_scores] # sigmoid the output of decision function
-#    print(tw_scores)
     assert len(candidate_tar_words) == len(tw_scores)
     scored_tw = list(zip(candidate_tar_words, tw_scores))
     
@@ -352,8 +361,8 @@ def main():
     assert len(positions) == len(src)
 
     p1 = len([p for p in positions if p == 1]) / len(positions)
-    p5 = len([p for p in positions if p <= 1000]) / len(positions)
-    p10 = len([p for p in positions if p <= 3000]) / len(positions)
+    p5 = len([p for p in positions if p <= 5]) / len(positions)
+    p10 = len([p for p in positions if p <= 10]) / len(positions)
     mrr = sum([1.0/p for p in positions]) / len(positions)
 
     print("P1 = %.4f" % (p1))

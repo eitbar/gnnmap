@@ -16,17 +16,12 @@ from sklearn.utils import shuffle
 import math
 from wordfreq import word_frequency
 import textdistance
-from sklearn.model_selection import cross_val_score
 import torch
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 from tqdm import tqdm
 import random
-from sklearn.feature_selection import SelectKBest, chi2
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.neural_network import MLPClassifier
+
 from graph_utils import calc_csls_sim
+from new_dssm import Classifier as gnn_Classifier
 # src list of indexes from the source vocab to get neighbours for (these index the rows of X)
 # X embedding matrix for the source language 
 # Z embedding matrix for the target language
@@ -160,163 +155,6 @@ def precompute_orthographic_NN(src_words, tar_words, num_NN, num_output = 20000,
     sorted_s = sorted(sorted_s, key = lambda t:resort_func(t[0],t[1]), reverse = True)
   ret = [(src_ind2w[k], tar_ind2w[v], c) for k,v,c in sorted_s]
   return(ret, d)
-
-
- 
-
-class FeatureCalculator():
-
-  def __init__(self, src_words, tar_words, src_embeddings, tar_embeddings, src_code, tar_code, ornn, args):
-    #self.char_tfidf = TfidfVectorizer(analyzer = "char", min_df = 1, ngram_range = (2,5)).fit(src_words + tar_words)
-    self.src_w2ind = {word: i for i, word in enumerate(src_words)}
-    self.tar_w2ind = {word: i for i, word in enumerate(tar_words)}
-    self.x = src_embeddings
-    self.z = tar_embeddings
-    self.src_code = src_code
-    self.tar_code = tar_code
-    
-    self.pca_s = PCA(n_components = 10)
-    self.pca_t = PCA(n_components = 10)
-
-    # PCA分析
-    self.x_pca = self.pca_s.fit_transform(cupy.asnumpy(self.x))
-    self.z_pca = self.pca_t.fit_transform(cupy.asnumpy(self.z))
-    self.ornn = ornn
-
-    # char级别的词袋模型
-    self.src_count_vect = CountVectorizer(ngram_range = (1,4), analyzer = "char")
-    self.tar_count_vect = CountVectorizer(ngram_range = (1,4), analyzer = "char")
-    #self.interaction = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False) 
-    self.kbest = SelectKBest(chi2, k = 10)
-    self.args = args
-
-  def update_embeddings(self, src_embeddings, tar_embeddings):
-    # 更新保存的embedding
-    # 更新pca结果
-    self.x = src_embeddings
-    self.z = tar_embeddings
-    self.x_pca = self.pca_s.fit_transform(cupy.asnumpy(self.x))
-    self.z_pca = self.pca_t.fit_transform(cupy.asnumpy(self.z))
-    
-  
-  def calc_features(self, word_pairs, labels, mode = "train"): # word_pairs should be a list of tuples and x and z numpy matrices representing the currently aligned embeddings
-    features = []
-    # default 0
-    if self.args.use_char_ngrams == 1:
-      src_words = [wp[0] for wp in word_pairs]
-      tar_words = [wp[1] for wp in word_pairs]
-      if mode == "train":
-        src_char_feats = self.src_count_vect.fit_transform(src_words)
-        tar_char_feats = self.tar_count_vect.fit_transform(tar_words)
-        print(src_char_feats.shape)
-        print(tar_char_feats.shape)
-        all_char_feats = sparse_hstack((src_char_feats, tar_char_feats))
-        #all_char_feats_inter  = self.interaction.fit_transform(all_char_feats)
-        all_char_feats_inter  = all_char_feats # no interaction, too slow
-        best_char_feats = self.kbest.fit_transform(all_char_feats_inter, labels)
-      elif mode == "test":
-        src_char_feats = self.src_count_vect.transform(src_words)
-        tar_char_feats = self.tar_count_vect.transform(tar_words)
-        all_char_feats = sparse_hstack((src_char_feats, tar_char_feats))
-        #all_char_feats_inter = self.interaction.transform(all_char_feats)
-        all_char_feats_inter = all_char_feats # no interaction, too slow
-        best_char_feats = self.kbest.transform(all_char_feats_inter)
-      
-      best_char_feats = best_char_feats.todense()
-      for i in range(best_char_feats.shape[1]):
-        features.append(list([x[0] for x in best_char_feats[:,i].tolist()]))
-
-
-    # default 1
-    # word_pairs即分类器的训练数据
-    # 一对word间得编辑距离放入features
-    if self.args.use_edit_dist == 1:
-      #print("Levensthein edit distance feats ...")
-      # Levensthein edit distance
-      levenshtein_feats = [textdistance.levenshtein.distance(sw, tw) for sw, tw in word_pairs]
-      features.append(levenshtein_feats)
-    
-      #print("Jaro Winkler edit distance feats ...")
-      # Jaro Winkler edit distance
-      jaro_feats = [textdistance.jaro.distance(sw, tw) for sw, tw in word_pairs]
-      features.append(jaro_feats)
-      
-      norm_lev_feats = [textdistance.levenshtein.distance(sw, tw)/np.mean([float(len(sw)), float(len(tw))]) for sw, tw in word_pairs]
-      features.append(norm_lev_feats)
-      
-      rank_lev_feats = [math.log(textdistance.levenshtein.distance(sw, tw) + 1) for sw, tw in word_pairs]
-      features.append(rank_lev_feats)    
-  
-      edit_combo_feats = [norm_lev_feats[i] + rank_lev_feats[i] for i in range(len(norm_lev_feats))]    
-      features.append(edit_combo_feats)    
-
-    # default 1
-    # embedding的cos相似度
-    if self.args.use_aligned_cosine == 1:
-      #print("Aligned embeddings cosine feats ...")
-      # cosine sim in the aligned embedding space
-      aligned_cosine_feats = []
-      for sw, tw in word_pairs:
-        swv = self.x[self.src_w2ind[sw],:]
-        twv = self.z[self.tar_w2ind[tw],:]
-        aligned_cosine_feats.append(swv.dot(twv.T).item())
-      features.append(aligned_cosine_feats)
-    # default 1
-    # pca分解后的cos相似度
-    if self.args.use_aligned_pca == 1:
-      src_pca_feats, tar_pca_feats = {}, {}     
-      for sw,tw in word_pairs:
-        swv = self.x_pca[self.src_w2ind[sw],:]
-        twv = self.z_pca[self.tar_w2ind[tw],:]
-        for i in range(swv.shape[0]):
-          if i not in src_pca_feats:
-            src_pca_feats[i] = []
-          src_pca_feats[i].append(swv[i])
-        for i in range(twv.shape[0]):
-          if i not in tar_pca_feats:
-            tar_pca_feats[i] = []
-          tar_pca_feats[i].append(twv[i])
-      for k in src_pca_feats:
-        features.append(src_pca_feats[k])
-      for k in tar_pca_feats:
-        features.append(tar_pca_feats[k])
-
-
-    # n-gram overlap
-    def find_ngrams(input_list, n):
-       return list(zip(*[input_list[i:] for i in range(n)]))
-    
-    # default 1
-    # 将n-gram的覆盖度也当作一种特征
-    if self.args.use_ngrams == 1:
-      for n in range(2, 6):
-        cngofeats_n = [] 
-        for sw, tw in word_pairs:
-          cns = find_ngrams([c for c in sw], n)
-          cnt = find_ngrams([c for c in tw], n)
-          # s1 是src_word的ngram个数，s2 是tgt word的ngram个数，s1s2是两个word的ngram交集
-          s1, s2, s1s2 = len(cns), len(cnt), len ([x for x in cns if x in cnt])
-
-          cngofeats_n.append((2 / (s1/s1s2 + s2/s1s2)) if s1s2 != 0 else 0)
-        features.append(cngofeats_n)
- 
-    # default 1
-    # 加入频率信息，由于embedding是按频率排序的，因此用id/vocb_size表示频率特征
-    if self.args.use_frequencies == 1:
-      #print("Calculating frequency features ...")
-      # word frequencies and word rankings in frequency sorted lists
-      src_freq_feats = []
-      tar_freq_feats = []
-      src_frank_feats = []
-      tar_frank_feats = []
-      for sw, tw in word_pairs:
-        src_frank_feats.append(float(self.src_w2ind[sw]) / len(self.src_w2ind))
-        tar_frank_feats.append(float(self.tar_w2ind[tw]) / len(self.tar_w2ind))
-      features.append(src_frank_feats)
-      features.append(tar_frank_feats)
-
-    return(np.array(features).T)
-
 
 class PoolerCNG:
 
@@ -455,108 +293,6 @@ class PoolerCombined:
       all_candidates += candidates
     return(all_candidates)
 
-
-
-class Classifier:
-  def __init__(self, feat_calc, sc):
-    self.fc = feat_calc  
-    self.scaler = StandardScaler()
-    self.scoring = sc
-  
-  def fit(self, pos_examples, neg_examples):
-    train_set = pos_examples + neg_examples
-    labs = [1]*len(pos_examples) + [0]*len(neg_examples)
-
-    print("Calculating features ...")
-    # 拿到feature
-    feats = self.fc.calc_features(train_set, labs, mode = "train")
-    # 标准化
-    feats = self.scaler.fit_transform(feats)
-    # 
-    feats, labs = shuffle(feats, labs)
-    feats, labs = np.array(feats), np.array(labs) 
-
- 
-    print("Crossvalidation ...")
-    # 在验证集上选择最好的h和alpha，当作最终的model
-    best_score, best_h, best_alpha =  -1000, None, None
-    for h in [3,5,10,20]:
-      for alpha in [0.0001,  0.01, 1]:
-        current_model = MLPClassifier(hidden_layer_sizes = (h,), early_stopping = True, alpha = alpha)
-        s = cross_val_score(estimator = current_model, X = feats, y = labs, cv = 3, scoring = self.scoring, n_jobs = -1)       
-        s = np.mean(s)
-        if s > best_score:
-          best_score, best_h, best_alpha = s, h, alpha
-    self.model = MLPClassifier(hidden_layer_sizes = (best_h,), early_stopping = True, alpha = best_alpha)
-    self.model.fit(feats, labs)
-
-    print("Crossval score of best model was " + str(best_score))
-
-  def predict(self, examples):
-    feats = self.fc.calc_features(examples, None, mode = "test") 
-    feats = self.scaler.transform(feats)
-    correct_col = 0 if self.model.classes_[0] == 1 else 1
-    retval = list(self.model.predict_proba(feats)[:,correct_col])
-    return(retval)
-
-
-
-# method can be "random", "hard" or "mix"
-# hard examples are wrong pairs that (in spite of being wrong) have high cosine
-# mix is half random half hard 
-def generate_negative_examples(positive_examples, src_w2ind, tar_w2ind, x, z, method = "random"): 
-  l = len(positive_examples)
-  if method == "mix":
-    num_rand, num_hard = math.floor(l / 2), math.ceil(l / 2) # floor/ceil so the sum is still == l
-  elif method == "random":
-    num_rand, num_hard = l, 0
-  elif method == "hard":
-    num_rand, num_hard = 0, l
-  else:
-    raise Exception("Unsupported method for negative sampling.")
-
-  rand_list, hard_list = [], []
-  positive_src = [t[0] for t in positive_examples]
-  positive_tar = [t[1] for t in positive_examples]
-
-  # generate the random examples (num_rand of them)
-  for i in range(num_rand):
-    success = False
-    while(not success):
-      src_ind, tar_ind = randrange(l), randrange(l)
-      if src_ind != tar_ind: # when the indexes are the same that is a positive example
-        rand_list.append((positive_src[src_ind], positive_tar[tar_ind]))
-        success = True
-   
-  # generate the hard examples (num_hard of them, or skip it if we dont need  them) 
-    
-  if num_hard > 0:
-    pos_src_word_indexes = [src_w2ind[i] for i in positive_src]
-    pos_tar_word_indexes = [tar_w2ind[i] for i in positive_tar]
-    pos_src_embeddings = x[pos_src_word_indexes,:]
-    pos_tar_embeddings = z[pos_tar_word_indexes,:]
-    print("Starting dot prod")
-    similarities = pos_src_embeddings.dot(pos_tar_embeddings.T)
-    print("Finished dot prod")
-    l = len(positive_src)
-
-    sflat = similarities.flatten()
-    sind = (-sflat).argsort()
-     
-    current = 0
-    for i in range(num_hard): # stupid but works fast enough, do n_hard argmaxes on the array (argmax is very fast and there will only ever be a few thousand of them needed)
-      success = False
-      while not success:
-        ind = sind[current].item()
-        current += 1
-        si, ti = int(ind / l), ind % l
-        if si != ti:
-          hard_list.append((positive_src[si], positive_tar[ti]))
-          success = True
-  
-  ret_list = rand_list + hard_list
-  shuffle(ret_list)  
-  return(ret_list)
  
 class OrthoNNProvider():
   def __init__(self, path_to_file, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w):
@@ -627,20 +363,31 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
   return return_list, src_word2neg_words
  
 
+def calc_monolingual_adj(embedding, threshold=0, method='cos'):
+  if method == 'cos':
+    adj = embedding.dot(embedding.T)
+  elif method == 'csls':
+    adj = calc_csls_sim(embedding, embedding, 10, True)
+  else:
+    adj = None
+
+  _mask = adj > threshold
+  print(_mask.sum())
+  adj = adj * _mask
+
+  return adj
 
 def run_selflearning(args):
   SL_start_time = time.time()
   SELF_LEARNING_ITERATIONS = args.num_iterations
   EXAMPLES_TO_POOL = args.examples_to_pool
   EXAMPLES_TO_ADD = args.examples_to_add
-  #neg_method = "hard"
+
   neg_top_k = 10
   neg_per_pos = 9
   neg_editdist_per_pos = 1
 
-  write_original = False
   use_classifier = args.use_classifier == 1  
-  #add_cng_pooler = False
   use_mnns_pooler = args.use_mnns_pooler == 1
  
  
@@ -716,17 +463,6 @@ def run_selflearning(args):
   print("Starting the Artetxe et al. alignment ...") 
   xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)    
 
-
-  # 这里是false
-  if write_original:
-    src_output_filename = "./SRC_SUPERVISED_" + task_name + "-nosl.txt"
-    tar_output_filename = "./TAR_SUPERVISED_" + task_name + "-nosl.txt"
-    srcfile = open(src_output_filename, mode='w', encoding="utf-8", errors='surrogateescape')
-    trgfile = open(tar_output_filename, mode='w', encoding="utf-8", errors='surrogateescape')
-    embeddings.write(src_words, xw, srcfile)
-    embeddings.write(trg_words, zw, trgfile)
-    srcfile.close()
-    trgfile.close()
  
   # 生成负例
   # 返回的是负例word pair的list
@@ -737,53 +473,23 @@ def run_selflearning(args):
 
   if use_classifier: 
     print("Training initial classifier ...")
-    #train initial classifier on the seed dictionary
-    #feat_calculator = FeatureCalculator(src_words, trg_words, xw, zw, args.src_lid, args.tar_lid, or_nn_provider, args)
-    #model = Classifier(feat_calculator, args.scoring)
-    #model.fit(pos_examples, neg_examples)
-    #result = model.predict(val_examples)
-    #print(len([c for c in result if c > 0.5])/ len(result))
-    
-    from new_dssm import Classifier as gnn_Classifier
-
-    train_set = pos_examples + neg_examples
-    train_set = [[src_word2ind[_s] for _s, _t in train_set], [trg_word2ind[_t] for _s, _t in train_set]]
-    train_labs = [1]*len(pos_examples) + [0]*len(neg_examples)
-
-    val_set = val_examples
-    val_set = [[src_word2ind[_s] for _s, _t in val_set], [trg_word2ind[_t] for _s, _t in val_set] ]
-    val_labs = [1]*len(val_examples)
-    print(torch.cuda.is_available())
 
     embeddings.normalize(xw, ['unit', 'center', 'unit'])
     embeddings.normalize(zw, ['unit', 'center', 'unit'])
-
+    x_adj = calc_monolingual_adj(xw, 0.5)
+    z_adj = calc_monolingual_adj(zw, 0.5)
+    print((x_adj > 0.5).sum())
+    print((z_adj > 0.5).sum())
     with torch.no_grad():
-      data = {
-          'train_x': torch.tensor(train_set, dtype=torch.long),
-          'train_y': torch.tensor(train_labs, dtype=torch.float32),
-          'val_x': torch.tensor(val_set, dtype=torch.long),
-          'val_y': torch.tensor(val_labs, dtype=torch.float32)
-      }
-      #x_sim = calc_csls_sim(xw, xw, 10, True)
-      #z_sim = calc_csls_sim(zw, zw, 10, True)
-      x_sim = xw.dot(xw.T)
-      z_sim = zw.dot(zw.T)
-      x_sim = x_sim * (x_sim > 0)
-      z_sim = z_sim * (z_sim > 0)
       torch_xw = torch.from_numpy(asnumpy(xw))
       torch_zw = torch.from_numpy(asnumpy(zw))
-      torch_x_sim = torch.from_numpy(asnumpy(x_sim))
-      torch_z_sim = torch.from_numpy(asnumpy(z_sim))
+      torch_x_adj = torch.from_numpy(asnumpy(x_adj))
+      torch_z_adj = torch.from_numpy(asnumpy(z_adj))
 
     train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
     val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
-    model = gnn_Classifier(300, 300, 300)
-    model.fit(torch_xw, torch_x_sim, torch_zw, torch_z_sim, train_set, src_w2negs, val_set)
-    #result = model.predict(data)
-
-  #print(model.predict([("dog","pas"),("cat","sabor")]))
-  #exit()
+    model = gnn_Classifier(xw.shape[1], zw.shape[1], 300)
+    model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set)
 
 
 
@@ -823,13 +529,24 @@ def run_selflearning(args):
       #predict scores for the  candidates using the classifier
 
       test_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pooled_examples]
+      test_src = []
+      test_src2tgts = collections.defaultdict(list)
+      for _s, _t in test_set:
+        if _s not in test_src:
+          test_src.append(_s)
+        test_src2tgts[_s].append(_t)
 
-      scores = model.predict(torch_xw, torch_x_sim, torch_zw, torch_z_sim, test_set)
+      scores = model.predict(torch_xw, torch_x_adj, torch_zw, torch_z_adj, test_src, test_src2tgts)
+      print(scores.shape)
       scores = scores.cpu().detach().numpy().tolist()
+      scored_examples = []
+      for i, _s in enumerate(test_src):
+        assert len(test_src2tgts[_s]) == 1
+        _t = test_src2tgts[_s][0]
+        scored_examples.append(((src_ind2word[_s], trg_ind2word[_t]), scores[i]))
 
-      assert len(scores) == len(pooled_examples)
+      assert len(scored_examples) == len(pooled_examples)
 
-      scored_examples = [(pooled_examples[i], scores[i]) for i in range(len(pooled_examples))]
       top_examples = sorted(scored_examples, key = lambda t:t[1], reverse = True)[0:EXAMPLES_TO_ADD]
       top_examples = [t[0] for t in top_examples] # removes the scores
     else:  
@@ -857,69 +574,30 @@ def run_selflearning(args):
     xw, zw = new_xw, new_zw
     embeddings.normalize(xw, ['unit', 'center', 'unit'])
     embeddings.normalize(zw, ['unit', 'center', 'unit'])
-    # 更新feat
-    #if use_classifier:
-      #feat_calculator.update_embeddings(xw,zw) # will use the new aligned space when calculating features next time 
  
     # 生成neg example
     print("Generating negative samples for the expanded train dictionary.")
     # generate new negative examples (these will be different in every iter, maybe change this?)
-    #neg_examples = generate_negative_examples(pos_examples, src_word2ind, trg_word2ind, xw, zw, method = neg_method)
     neg_examples, src_w2negs =  generate_negative_examples_v2(pos_examples, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word, xw, zw, top_k = neg_top_k, num_neg_per_pos = neg_per_pos, num_neg_editdist = neg_editdist_per_pos, ornn = or_nn_provider) 
     print("Retraining the classifier on the expanded data ...")
     # retrain the classifier on the expanded seed dictionary and the new (theoretically better) alignments
     
     # 训练分类器
     if use_classifier:
-      #model.fit(pos_examples, neg_examples)
-      train_set = pos_examples + neg_examples
-      train_set = [[src_word2ind[_s] for _s, _t in train_set], [trg_word2ind[_t] for _s, _t in train_set] ]
-      train_labs = [1]*len(pos_examples) + [0]*len(neg_examples)
-
-      val_set = val_examples
-      val_set = [[src_word2ind[_s] for _s, _t in val_set], [trg_word2ind[_t] for _s, _t in val_set] ]
-      val_labs = [1]*len(val_examples)
-
+      x_adj = calc_monolingual_adj(xw, 0.5)
+      z_adj = calc_monolingual_adj(zw, 0.5)
+      print((x_adj > 0.5).sum())
+      print((z_adj > 0.5).sum())
       with torch.no_grad():
-        data = {
-            'train_x': torch.tensor(train_set, dtype=torch.long),
-            'train_y': torch.tensor(train_labs, dtype=torch.float32),
-            'val_x': torch.tensor(val_set, dtype=torch.long),
-            'val_y': torch.tensor(val_labs, dtype=torch.float32)
-        }
-        #x_sim = calc_csls_sim(xw, xw, 10, True)
-        #z_sim = calc_csls_sim(zw, zw, 10, True)
-        x_sim = xw.dot(xw.T)
-        z_sim = zw.dot(zw.T)
-        x_sim = x_sim * (x_sim > 0)
-        z_sim = z_sim * (z_sim > 0)
-        print((x_sim > 0).sum())
-        print((z_sim > 0).sum())
         torch_xw = torch.from_numpy(asnumpy(xw))
         torch_zw = torch.from_numpy(asnumpy(zw))
-        torch_x_sim = torch.from_numpy(asnumpy(x_sim))
-        torch_z_sim = torch.from_numpy(asnumpy(z_sim))
+        torch_x_adj = torch.from_numpy(asnumpy(x_adj))
+        torch_z_adj = torch.from_numpy(asnumpy(z_adj))
 
-      train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples]
+      train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
       val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
-      model = gnn_Classifier(300, 300, 300)
-      model.fit(torch_xw, torch_x_sim, torch_zw, torch_z_sim, train_set, src_w2negs, val_set)
-    
-    #if it in [1,2,3,5,10,20,30,40,50]:
-    if args.checkpoint_steps != -1 and it % args.checkpoint_steps == 0:
-      print("Writing output to files ...")
-      # write res to disk
-      srcfile = open(args.out_src + ".checkpoint-" + str(it), mode='w', encoding="utf-8", errors='surrogateescape')
-      trgfile = open(args.out_tar + ".checkpoint-" + str(it), mode='w', encoding="utf-8", errors='surrogateescape')
-      embeddings.write(src_words, xw, srcfile)
-      embeddings.write(trg_words, zw, trgfile)
-      srcfile.close()
-      trgfile.close()
-      if use_classifier:
-        print("Saving the supervised model to disk ...")
-        with open(model_out_filename + ".checkpoint-" + str(it), "wb") as outfile:
-          pickle.dump(model, outfile)
-  
+      model = gnn_Classifier(xw.shape[1], zw.shape[1], 300)
+      model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set)  
   
   if SELF_LEARNING_ITERATIONS == 0:
     it = 0

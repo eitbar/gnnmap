@@ -99,14 +99,15 @@ class GDSSM(nn.Module):
 
 
 class Classifier:
-    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, device='gpu', epochs=50):
+    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, device='gpu', epochs=20, lr=0.005, train_batch_size=256, train_random_neg_select=512):
         print(device == 'gpu')
         self.device = torch.device("cuda" if torch.cuda.is_available() and device == 'gpu' else "cpu")
         self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim)
         self.epochs = epochs
-        self.train_batch_size = 256
+        self.train_batch_size = train_batch_size
         self.loss_func = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.005)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.train_random_neg_select = train_random_neg_select
         #self.scheduler = WarmupLinearSchedule(
         #self.optimizer, warmup_steps=0, t_total=epochs)
 
@@ -115,7 +116,7 @@ class Classifier:
       for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-    def _bpr_loss_func(self, logits):
+    def _bpr_loss_func(self, logits, labels_index):
       pos_si = logits[:, 0]
       neg_si = logits[:, 1:]
       diff = pos_si[:, None] - neg_si
@@ -143,7 +144,7 @@ class Classifier:
         train_src = list(set([_[0] for _ in pos_examples]))        
 
 
-        train_dataset = DssmDatasets(pos_examples, src_w2negs)
+        train_dataset = DssmDatasets(pos_examples, src_w2negs, random_neg_num=self.train_random_neg_select)
         train_dataloader = DataLoader(train_dataset, 
                                 batch_size=self.train_batch_size,
                                 shuffle=False, 
@@ -151,6 +152,7 @@ class Classifier:
         
         optimizer = self.optimizer
         loss_func = self._bpr_loss_func
+        #loss_func = self.loss_func
         #scheduler = self.scheduler 
 
         best_val_acc = 0
@@ -168,7 +170,7 @@ class Classifier:
                 labels_index = labels_index.to(self.device)
 
                 logits = model(src_x, src_a, tgt_x, tgt_a, src_index, tgts_index)
-                loss = loss_func(logits)
+                loss = loss_func(logits, labels_index)
 
                 loss.backward()
                 optimizer.step()
@@ -180,7 +182,7 @@ class Classifier:
                 print('In epoch {}, step: {}, loss: {:.5f}, lr: {:.8f} '.format(e, step, loss, optimizer.state_dict()['param_groups'][0]['lr']))
 
             # evaluate test set
-            if e % 20 == 0:
+            if e % 10 == 0 or e == self.epochs - 1:
               model.eval()
               #val_src = train_src
               #val_src2tgts = train_src2tgts
@@ -217,6 +219,11 @@ class Classifier:
           test_tgts = [list(range(tgt_x.shape[0]))] * len(test_src)
         else:
           test_tgts = [src2tgts_list[_] for _ in test_src]
+        
+        # pad
+        max_tgts_len = max([len(_) for _ in test_tgts])
+        for i in range(len(test_tgts)):
+          test_tgts[i] = test_tgts[i] + [0] * (max_tgts_len - len(test_tgts[i]))
 
         test_src = torch.tensor(test_src, dtype=torch.long, device=self.device)
         test_tgts = torch.tensor(test_tgts, dtype=torch.long, device=self.device)

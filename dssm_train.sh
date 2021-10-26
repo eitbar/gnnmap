@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=2 python dssm_train.py --train_dict "./data/en-hr/yacle.train.freq.3k.en-hr.tsv" \
+CUDA_VISIBLE_DEVICES=1 python dssm_train.py --train_dict "./data/en-hr/yacle.train.freq.3k.en-hr.tsv" \
                                             --val_dict "./data/en-hr/yacle.test.freq.2k.en-hr.tsv" \
                                             --in_src "./data/en-hr/wiki.30k.en.vec" \
                                             --in_tar "./data/en-hr/wiki.30k.hr.vec" \

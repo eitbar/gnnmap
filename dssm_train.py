@@ -210,10 +210,6 @@ def run_dssm_trainning(args):
   neg_top_k = 10
   neg_per_pos = 9
   neg_editdist_per_pos = 1
-
-  write_original = False
-  use_classifier = args.use_classifier == 1  
- 
  
   task_name = args.src_lid + "-" + args.tar_lid + "-" + args.idstring
   cng_cachefile = "./cache/ortho_nn_" + task_name + ".pickle"
@@ -286,18 +282,6 @@ def run_dssm_trainning(args):
   # call artetxe to get the initial alignment on the initial train dict
   print("Starting the Artetxe et al. alignment ...") 
   xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)    
-
-
-  # 这里是false
-  if write_original:
-    src_output_filename = "./SRC_SUPERVISED_" + task_name + "-nosl.txt"
-    tar_output_filename = "./TAR_SUPERVISED_" + task_name + "-nosl.txt"
-    srcfile = open(src_output_filename, mode='w', encoding="utf-8", errors='surrogateescape')
-    trgfile = open(tar_output_filename, mode='w', encoding="utf-8", errors='surrogateescape')
-    embeddings.write(src_words, xw, srcfile)
-    embeddings.write(trg_words, zw, trgfile)
-    srcfile.close()
-    trgfile.close()
  
   # 生成负例,hard neg examples
   # 返回的是负例word pair的list
@@ -309,9 +293,11 @@ def run_dssm_trainning(args):
 
   embeddings.normalize(xw, ['unit', 'center', 'unit'])
   embeddings.normalize(zw, ['unit', 'center', 'unit'])
-  x_adj = calc_monolingual_adj(xw)
-  z_adj = calc_monolingual_adj(zw)
-  
+  x_adj = calc_monolingual_adj(xw, 0.5)
+  z_adj = calc_monolingual_adj(zw, 0.5)
+  print((x_adj > 0.5).sum())
+  print((z_adj > 0.5).sum())
+
   with torch.no_grad():
     torch_xw = torch.from_numpy(asnumpy(xw))
     torch_zw = torch.from_numpy(asnumpy(zw))
@@ -333,10 +319,9 @@ def run_dssm_trainning(args):
   embeddings.write(trg_words, zw, trgfile)
   srcfile.close()
   trgfile.close()
-  if use_classifier:
-    print("Saving the supervised model to disk ...")
-    with open("./" + model_out_filename, "wb") as outfile:
-      pickle.dump(model, outfile)
+  print("Saving the supervised model to disk ...")
+  with open("./" + model_out_filename, "wb") as outfile:
+    pickle.dump(model, outfile)
   print(str(args.idstring))
   print("SL FINISHED " + str(time.time() - SL_start_time))
   
@@ -357,7 +342,6 @@ if __name__ == "__main__":
    parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)
    parser.add_argument('--idstring', type=str,  default="EXP", help='Special id string that will be included in all generated model and cache files. Default is EXP.')
 
-   parser.add_argument('--use_classifier', type=int,  default=1, help='Whether to use the classifier to rerank pooled candidates. Default is 1.')
    parser.add_argument('--art_supervision', type=str,  default="--supervised", help='Supervision argument to pass on to Artetxe et al. code. Default is "--supervised".')
 
    args = parser.parse_args()
