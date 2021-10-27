@@ -198,7 +198,6 @@ def calc_monolingual_adj(embedding, threshold=0, method='cos'):
     adj = None
 
   _mask = adj > threshold
-  print(_mask.sum())
   adj = adj * _mask
 
   return adj
@@ -293,10 +292,9 @@ def run_dssm_trainning(args):
 
   embeddings.normalize(xw, ['unit', 'center', 'unit'])
   embeddings.normalize(zw, ['unit', 'center', 'unit'])
-  x_adj = calc_monolingual_adj(xw, 0.5)
-  z_adj = calc_monolingual_adj(zw, 0.5)
-  print((x_adj > 0.5).sum())
-  print((z_adj > 0.5).sum())
+
+  x_adj = calc_monolingual_adj(xw, 0.7)
+  z_adj = calc_monolingual_adj(zw, 0.7)
 
   with torch.no_grad():
     torch_xw = torch.from_numpy(asnumpy(xw))

@@ -476,10 +476,8 @@ def run_selflearning(args):
 
     embeddings.normalize(xw, ['unit', 'center', 'unit'])
     embeddings.normalize(zw, ['unit', 'center', 'unit'])
-    x_adj = calc_monolingual_adj(xw, 0.5)
-    z_adj = calc_monolingual_adj(zw, 0.5)
-    print((x_adj > 0.5).sum())
-    print((z_adj > 0.5).sum())
+    x_adj = calc_monolingual_adj(xw, 0.7)
+    z_adj = calc_monolingual_adj(zw, 0.7)
     with torch.no_grad():
       torch_xw = torch.from_numpy(asnumpy(xw))
       torch_zw = torch.from_numpy(asnumpy(zw))
@@ -488,7 +486,7 @@ def run_selflearning(args):
 
     train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
     val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
-    model = gnn_Classifier(xw.shape[1], zw.shape[1], 300)
+    model = gnn_Classifier(xw.shape[1], zw.shape[1], 300, epochs=30)
     model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set)
 
 
@@ -584,10 +582,15 @@ def run_selflearning(args):
     
     # 训练分类器
     if use_classifier:
-      x_adj = calc_monolingual_adj(xw, 0.5)
-      z_adj = calc_monolingual_adj(zw, 0.5)
-      print((x_adj > 0.5).sum())
-      print((z_adj > 0.5).sum())
+      del x_adj
+      del z_adj
+      del torch_xw
+      del torch_zw
+      del torch_x_adj
+      del torch_z_adj
+      del model
+      x_adj = calc_monolingual_adj(xw, 0.7)
+      z_adj = calc_monolingual_adj(zw, 0.7)
       with torch.no_grad():
         torch_xw = torch.from_numpy(asnumpy(xw))
         torch_zw = torch.from_numpy(asnumpy(zw))
@@ -596,7 +599,7 @@ def run_selflearning(args):
 
       train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
       val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
-      model = gnn_Classifier(xw.shape[1], zw.shape[1], 300)
+      model = gnn_Classifier(xw.shape[1], zw.shape[1], 300, epochs=30)
       model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set)  
   
   if SELF_LEARNING_ITERATIONS == 0:

@@ -72,7 +72,6 @@ class BaseTower(nn.Module):
 
     def forward(self, node_feat, adj):
         h = self.conv(adj, node_feat)
-        h = self.dropout(h)
         p_h = self.proj(h)
         return p_h
 
@@ -99,7 +98,7 @@ class GDSSM(nn.Module):
 
 
 class Classifier:
-    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, device='gpu', epochs=20, lr=0.005, train_batch_size=256, train_random_neg_select=512):
+    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, device='gpu', epochs=100, lr=0.0001, train_batch_size=256, train_random_neg_select=512):
         print(device == 'gpu')
         self.device = torch.device("cuda" if torch.cuda.is_available() and device == 'gpu' else "cpu")
         self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim)
@@ -182,7 +181,7 @@ class Classifier:
                 print('In epoch {}, step: {}, loss: {:.5f}, lr: {:.8f} '.format(e, step, loss, optimizer.state_dict()['param_groups'][0]['lr']))
 
             # evaluate test set
-            if e % 10 == 0 or e == self.epochs - 1:
+            if e % 5 == 0 or e == self.epochs - 1:
               model.eval()
               #val_src = train_src
               #val_src2tgts = train_src2tgts

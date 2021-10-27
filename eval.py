@@ -153,7 +153,7 @@ def supervised_reranking2(translations, model_filename, x, z, si2w, ti2w, sw2i, 
     scores = model.predict(torch_xw, torch_x_adj, torch_zw, torch_z_adj, test_src, test_src2tgts)
     tw_scores = scores.cpu().detach().numpy().tolist()
     print(tw_scores)
-    tw_scores = tw_scores[0]
+    #tw_scores = tw_scores[0]
 
     assert len(candidate_tar_words) == len(tw_scores)
     scored_tw = list(zip(candidate_tar_words, tw_scores))
