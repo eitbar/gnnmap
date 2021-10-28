@@ -295,6 +295,8 @@ def run_dssm_trainning(args):
 
   x_adj = calc_monolingual_adj(xw, 0.7)
   z_adj = calc_monolingual_adj(zw, 0.7)
+  #x_adj = np.identity(xw.shape[0])
+  #z_adj = np.identity(zw.shape[0])
 
   with torch.no_grad():
     torch_xw = torch.from_numpy(asnumpy(xw))
@@ -304,7 +306,7 @@ def run_dssm_trainning(args):
 
   train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
   val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
-  model = gnn_Classifier(xw.shape[1], zw.shape[1], 300)
+  model = gnn_Classifier(xw.shape[1], zw.shape[1], 300, train_random_neg_select=1000)
   model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set)
 
   print("Writing output to files ...")

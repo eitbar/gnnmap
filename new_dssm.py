@@ -75,12 +75,22 @@ class BaseTower(nn.Module):
         p_h = self.proj(h)
         return p_h
 
+class SimpleTower(nn.Module):
+
+    def __init__(self, in_feat_dim, h_feat_dim):
+        super(SimpleTower, self).__init__()
+        self.conv = DenseGraphConv(in_feat_dim, h_feat_dim)
+
+    def forward(self, node_feat, adj):
+        h = self.conv(adj, node_feat)
+        return h 
+
 class GDSSM(nn.Module):
     
     def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim):
         super(GDSSM, self).__init__()
-        self.src_tower = BaseTower(src_in_feat_dim, h_feat_dim)
-        self.tgt_tower = BaseTower(tgt_in_feat_dim, h_feat_dim)
+        self.src_tower = SimpleTower(src_in_feat_dim, h_feat_dim)
+        self.tgt_tower = SimpleTower(tgt_in_feat_dim, h_feat_dim)
 
     def forward(self, node_feat_src, adj_src, node_feat_tgt, adj_tgt, src_index, tgts_index):
         src_h = self.src_tower(node_feat_src, adj_src)
