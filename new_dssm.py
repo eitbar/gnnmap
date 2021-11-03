@@ -1,3 +1,4 @@
+from numpy.random.mtrand import exponential
 from DenseGraphConv import DenseGraphConv
 import torch
 from torch import embedding, nn
@@ -9,6 +10,7 @@ from torch.utils.data import TensorDataset, DataLoader, Dataset, RandomSampler, 
 import os
 import argparse
 import math
+import json
 from tqdm import tqdm
 import random
 from random import randrange
@@ -18,11 +20,12 @@ from transformers import WarmupLinearSchedule
 from torch.utils.data import DataLoader, Sampler, Dataset, SequentialSampler
 
 class DssmDatasets(Dataset):
-    def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_num=1000):
+    def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_num=1000, pre_translation=None):
       self.lens = len(pos_examples)
       self.vocab_size = vocab_size 
       self.datas = self._build_dataset(pos_examples, src_w2negs)
       self.random_neg_num = random_neg_num
+      self.pre_translation = pre_translation
       random.seed(2021)
 
     def _build_dataset(self, pos_examples, src_w2negs):
@@ -32,25 +35,45 @@ class DssmDatasets(Dataset):
       return datas
 
     def __getitem__(self, i):
-      return self.datas[i]
+      orig = self.datas[i]
+      src_index = orig[0]
+      if self.pre_translation is not None:
+        new_item = [orig, random.sample(self.pre_translation[src_index][:10000], self.random_neg_num)]
+      else:
+        new_item = [orig, random.sample(list(range(self.vocab_size)), self.random_neg_num)]
+      return new_item
 
     def __len__(self):
       return len(self.datas)
 
     def collate(self, features):
-      pos_src_list = [_[0] for _ in features]
+      pos_src_list = [_[0][0] for _ in features]
       tgts_list = []
       labels_list = []
       for f in features:
-        random_neg_list = []
+        pos_src = f[0][0]
+        pos_tgt = f[0][1]
+        hard_neg = f[0][2]
+        sample_neg = f[1]
+        _tgts = [pos_tgt]
+        for _ in hard_neg + sample_neg:
+          if _ not in _tgts:
+            _tgts.append(_)
+        
+        
+        """
         while(len(random_neg_list) < self.random_neg_num):
-          random_neg_wi = random.randint(0, self.vocab_size - 1)
-          if random_neg_wi in f[2] or random_neg_wi == f[1]:
+          #print(len(random_neg_list))
+          if self.pre_translation is None:
+            random_neg_wi = random.randint(0, self.vocab_size - 1)
+          else:
+            random_neg_wi = random.choice(self.pre_translation[f[0]][:10000])
+          if random_neg_wi in random_neg_list or random_neg_wi == f[1]:
             continue
           else:
             random_neg_list.append(random_neg_wi)
-
-        tgts_list.append([f[1]] + f[2] + random_neg_list)
+        """
+        tgts_list.append(_tgts)
         labels_list.append(0)
 
       min_neg_size = min([len(_) for _ in tgts_list])
@@ -133,9 +156,12 @@ class Classifier:
       bpr_loss_batch_mean = bpr_loss.mean()
       return bpr_loss_batch_mean
 
-    def fit(self, src_x, src_a, tgt_x, tgt_a, pos_examples, src_w2negs, val_examples):
+    def fit(self, src_x, src_a, tgt_x, tgt_a, pos_examples, src_w2negs, val_examples, pre_translations=None, src_i2w=None, tgt_i2w=None, verbose=False):
         model = self.model
         model.to(self.device)
+
+        if src_i2w is None or tgt_i2w is None:
+          verbose = False
 
         src_x = src_x.to(self.device)
         src_a = src_a.to(self.device)
@@ -153,7 +179,10 @@ class Classifier:
         train_src = list(set([_[0] for _ in pos_examples]))        
 
 
-        train_dataset = DssmDatasets(pos_examples, src_w2negs, random_neg_num=self.train_random_neg_select)
+        train_dataset = DssmDatasets(pos_examples, src_w2negs, 
+                                      vocab_size=tgt_x.shape[0], 
+                                      random_neg_num=self.train_random_neg_select,
+                                      pre_translation=pre_translations)
         train_dataloader = DataLoader(train_dataset, 
                                 batch_size=self.train_batch_size,
                                 shuffle=False, 
@@ -164,7 +193,8 @@ class Classifier:
         #loss_func = self.loss_func
         #scheduler = self.scheduler 
 
-        best_val_acc = 0
+        best_val_acc = [0, 0, 0]
+        best_epoch = 0
         global_step = 0
         total_step = ((len(pos_examples) + self.train_batch_size - 1) // self.train_batch_size) * self.epochs
         
@@ -177,6 +207,9 @@ class Classifier:
                 src_index = src_index.to(self.device)
                 tgts_index = tgts_index.to(self.device)
                 labels_index = labels_index.to(self.device)
+                #for _, _src in enumerate(src_index):
+                #  if _src == 1752:
+                #    print(tgts_index[_])
 
                 logits = model(src_x, src_a, tgt_x, tgt_a, src_index, tgts_index)
                 loss = loss_func(logits, labels_index)
@@ -198,13 +231,31 @@ class Classifier:
               print(f'In epoch {e} evaluate:')
               eval_bs = 24
               tgts_result = []
+              scores_result = []
               for i in range(0, len(val_src), eval_bs):
                 j = min(i + eval_bs, len(val_src))
-                bs_pred_result = self.predict(src_x, src_a, tgt_x, tgt_a, val_src[i:j])
-                bs_tgts_result = torch.argsort(bs_pred_result, descending=True, dim=1).cpu().numpy().tolist()
+                if pre_translations is not None:
+                  bs_pre_translations = {}
+                  for _ in val_src[i:j]:
+                    bs_pre_translations[_] = pre_translations[_][:10000]
+                else:
+                  bs_pre_translations = None
+                bs_pred_result = self.predict(src_x, src_a, tgt_x, tgt_a, val_src[i:j], bs_pre_translations)
+                #bs_tgts_result = torch.argsort(bs_pred_result, descending=True, dim=1).cpu().numpy().tolist()
+                bs_score_result, bs_tgts_result = torch.sort(bs_pred_result, descending=True, dim=1)
+                bs_score_result = bs_score_result.cpu().numpy().tolist()
+                bs_tgts_result = bs_tgts_result.cpu().numpy().tolist()
+                if pre_translations is not None:
+                  re_index_bs_tgts_result = []
+                  for t, src_ind in enumerate(val_src[i:j]):
+                    re_index_bs_tgts_result.append([bs_pre_translations[src_ind][_] for _ in bs_tgts_result[t]])
+                  bs_tgts_result = re_index_bs_tgts_result
                 tgts_result = tgts_result + bs_tgts_result
+                scores_result = scores_result + bs_score_result
+              
+              tmp_acc = []
 
-              for k in [1, 5, 10]:
+              for k in [1, 5, 10, 50, 100]:
                 pred_src2tgts = {}
                 for i, s in enumerate(val_src):
                   pred_src2tgts[s] = set(tgts_result[i][:k])
@@ -213,7 +264,26 @@ class Classifier:
                   if len(pred_src2tgts[s] & val_src2tgts[s]) > 0:
                     count += 1
                 print(f'top_{k} acc: {count / len(val_src)}')
-              
+                tmp_acc.append(count / len(val_src))
+               
+              if best_val_acc < tmp_acc:
+                best_val_acc = tmp_acc
+                best_epoch = e
+                if verbose:
+                  src2pred_result_top100 = {}
+                  for i, s in enumerate(val_src):
+                    si_word = src_i2w[s]
+                    pred_scores = scores_result[i][:50]
+                    pred_word = [tgt_i2w[_] for _ in tgts_result[i][:50]]
+                    src2pred_result_top100[si_word] = {
+                      'gold': [tgt_i2w[_] for _ in val_src2tgts[s]],
+                      'pred': list(zip(pred_word, pred_scores))
+                      }
+                  with open('debug.json', 'w', encoding='utf-8') as f:
+                    json.dump(src2pred_result_top100, f, ensure_ascii=False, indent=2)
+
+
+              print(f"best result at epoch {best_epoch}: {best_val_acc}")
 
     def predict(self, src_x, src_a, tgt_x, tgt_a, test_src, src2tgts_list=None):
         model = self.model

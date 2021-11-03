@@ -18,7 +18,7 @@ import textdistance
 import torch
 from tqdm import tqdm
 import random
-from graph_utils import calc_csls_sim
+from graph_utils import calc_csls_sim, topk_mean
 from new_dssm import Classifier as gnn_Classifier
 # src list of indexes from the source vocab to get neighbours for (these index the rows of X)
 # X embedding matrix for the source language 
@@ -195,13 +195,30 @@ def calc_monolingual_adj(embedding, threshold=0, method='cos'):
   elif method == 'csls':
     adj = calc_csls_sim(embedding, embedding, 10, True)
   else:
-    adj = None
+    adj = np.identity(embedding.shape[0])
+    return adj
 
   _mask = adj > threshold
+  print(_mask.sum())
   adj = adj * _mask
 
   return adj
 
+def calc_csls_translation(x, z, BATCH_SIZE=512, csls_k=10):
+  xp = get_array_module(x)
+  src = list(range(x.shape[0]))
+  translation = collections.defaultdict(int)
+  knn_sim_bwd = xp.zeros(z.shape[0])
+  for i in range(0, z.shape[0], BATCH_SIZE):
+      j = min(i + BATCH_SIZE, z.shape[0])
+      knn_sim_bwd[i:j] = topk_mean(z[i:j].dot(x.T), k=csls_k, inplace=True)
+  for i in range(0, len(src), BATCH_SIZE):
+      j = min(i + BATCH_SIZE, len(src))
+      similarities = 2*x[src[i:j]].dot(z.T) - knn_sim_bwd  # Equivalent to the real CSLS scores for NN
+      nn = (-similarities).argsort(axis=1)
+      for k in range(j-i):
+          translation[src[i+k]] = nn[k]
+  return translation
 
 def run_dssm_trainning(args):
   SL_start_time = time.time()
@@ -280,21 +297,31 @@ def run_dssm_trainning(args):
   # 返回结果xw，zw是embedding矩阵，这个embedding矩阵是映射过后的embedding矩阵
   # call artetxe to get the initial alignment on the initial train dict
   print("Starting the Artetxe et al. alignment ...") 
-  xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)    
+  xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)  
  
   # 生成负例,hard neg examples
   # 返回的是负例word pair的list
   # generate negative examples for the current 
   print("Generating negative examples ...")
   neg_examples, src_w2negs =  generate_negative_examples_v2(pos_examples, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word, xw, zw, top_k = neg_top_k, num_neg_per_pos = neg_per_pos, num_neg_editdist = neg_editdist_per_pos, ornn = or_nn_provider)
+  
+  
+  print("tmp")
+  print("=======================")
 
   print("Training initial classifier ...")
 
   embeddings.normalize(xw, ['unit', 'center', 'unit'])
   embeddings.normalize(zw, ['unit', 'center', 'unit'])
 
-  x_adj = calc_monolingual_adj(xw, 0.7)
-  z_adj = calc_monolingual_adj(zw, 0.7)
+  csls_translation = None
+
+  #csls_translation = calc_csls_translation(xw, zw)
+  #for _ in csls_translation:
+  #  csls_translation[_] = asnumpy(csls_translation[_]).tolist()
+
+  x_adj = calc_monolingual_adj(xw, method='iden')
+  z_adj = calc_monolingual_adj(zw, method='iden')
   #x_adj = np.identity(xw.shape[0])
   #z_adj = np.identity(zw.shape[0])
 
@@ -304,10 +331,11 @@ def run_dssm_trainning(args):
     torch_x_adj = torch.from_numpy(asnumpy(x_adj))
     torch_z_adj = torch.from_numpy(asnumpy(z_adj))
 
+
   train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
   val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
-  model = gnn_Classifier(xw.shape[1], zw.shape[1], 300, train_random_neg_select=1000)
-  model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set)
+  model = gnn_Classifier(torch_xw.shape[1], torch_zw.shape[1], 300, train_random_neg_select=512, epochs=100, train_batch_size=256)
+  model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set, csls_translation, src_i2w=src_ind2word, tgt_i2w=trg_ind2word, verbose=True)
 
   print("Writing output to files ...")
   # write res to disk
