@@ -26,8 +26,6 @@ import sys
 import pickle
 from classymap import *
 import gc
-from tqdm import tqdm
-import torch
 
 
 BATCH_SIZE = 250
@@ -91,48 +89,25 @@ def supervised_reranking(translations, model_filename, si2w, ti2w, sw2i, tw2i, K
       print("*********************")
   return(ret)
 
-def calc_monolingual_adj(embedding, threshold=0, method='cos'):
-  if method == 'cos':
-    adj = embedding.dot(embedding.T)
-  elif method == 'csls':
-    adj = calc_csls_sim(embedding, embedding, 10, True)
-  else:
-    adj = None
-
-  _mask = adj > threshold
-  print(_mask.sum())
-  adj = adj * _mask
-
-  return adj
-
-
-def supervised_reranking2(translations, model_filename, x, z, si2w, ti2w, sw2i, tw2i, K, correct_trans, thr, ornn, numor):
+def supervised_reranking2(translations, model_filename, si2w, ti2w, sw2i, tw2i, K, correct_trans, thr, ornn, numor):
   with(open(model_filename, "rb")) as infile:
     model = pickle.load(infile)
   
   #print(model.predict([("dog","pas")]))
   # exit(0)
-  embeddings.normalize(x, ['unit', 'center', 'unit'])
-  embeddings.normalize(z, ['unit', 'center', 'unit'])
-  x_adj = calc_monolingual_adj(x, 0.5)
-  z_adj = calc_monolingual_adj(z, 0.5)
-  with torch.no_grad():
-    torch_xw = torch.from_numpy(asnumpy(x))
-    torch_zw = torch.from_numpy(asnumpy(z))
-    torch_x_adj = torch.from_numpy(asnumpy(x_adj))
-    torch_z_adj = torch.from_numpy(asnumpy(z_adj))
+
 #  print("Applying classifier")
   num_iter = 0
   ret = dict()
-  verbose = True
+  verbose = False
  
-  for sw in tqdm(translations, total=len(translations)):
-    num_iter += 1
+  for sw in translations:
+    num_iter += 1  
 #    print("Generating predictions of source word " + str(num_iter) + " / " + str(len(translations)))
     candidate_tar_words = translations[sw][0:K].tolist()
     if numor > 0:
       #print("Src word:" + si2w[sw])
-      # default numor = 3
+      
       additional_ortho_candidates = [tw2i[x[0]] for x in ornn.get_top_neighbours(si2w[sw],numor)] # target indices for the ortographically similar candidates
       #print([ti2w[x] for x in additional_ortho_candidates])
       candidate_tar_words += additional_ortho_candidates
@@ -146,15 +121,10 @@ def supervised_reranking2(translations, model_filename, x, z, si2w, ti2w, sw2i, 
       print("Src word:" + si2w[sw])
       print("Translations before:" + str([ti2w[x] for x in candidate_tar_words]))
     #print(candidate_tar_words)
-    test_src = [sw]
-    test_src2tgts = {}
-    test_src2tgts[sw] = candidate_tar_words
-
-    scores = model.predict(torch_xw, torch_x_adj, torch_zw, torch_z_adj, test_src, test_src2tgts)
-    tw_scores = scores.cpu().detach().numpy().tolist()
-    print(tw_scores)
-    #tw_scores = tw_scores[0]
-
+    data = [(si2w[sw], ti2w[tw]) for tw in candidate_tar_words]
+    tw_scores = model.predict(data)
+    tw_scores = [1.0 / (1.0 + math.exp(-x)) for x in tw_scores] # sigmoid the output of decision function
+#    print(tw_scores)
     assert len(candidate_tar_words) == len(tw_scores)
     scored_tw = list(zip(candidate_tar_words, tw_scores))
     
@@ -170,12 +140,10 @@ def supervised_reranking2(translations, model_filename, x, z, si2w, ti2w, sw2i, 
  #   print(sorted_tw_above_thr)
  #   print(sorted_tw_below_thr)
 
-    #if verbose:
-    #  print("Translations after rerank: " + str([(ti2w[x[0]], x[1]) for x in scored_tw]))
-    #exit()
-    reranked_top = [x[0] for x in sorted_tw_above_thr] + [x[0] for x in sorted_tw_below_thr]
     if verbose:
-      print("Translations after rerank: " + str([(ti2w[x[0]], x[1]) for x in sorted_tw_above_thr + sorted_tw_below_thr])) 
+      print("Translations after rerank: " + str([(ti2w[x[0]], x[1]) for x in sorted_tw]))
+    #exit()
+    reranked_top = [x[0] for x in sorted_tw_above_thr] + [x[0] for x in sorted_tw_below_thr] 
 #    print(reranked_top)
 #    exit()
 
@@ -253,6 +221,9 @@ def main():
     if not args.dot:
         embeddings.length_normalize(x)
         embeddings.length_normalize(z)
+    
+    #embeddings.normalize(x, ['unit', 'center', 'unit'])
+    #embeddings.normalize(z, ['unit', 'center', 'unit'])
 
     # Build word to index map
     src_word2ind = {word: i for i, word in enumerate(src_words)}
@@ -282,13 +253,18 @@ def main():
    
     # Find translations
     translation = collections.defaultdict(int)
+    scores = collections.defaultdict(int)
     if args.retrieval == 'nn':  # Standard nearest neighbor
         for i in range(0, len(src), BATCH_SIZE):
             j = min(i + BATCH_SIZE, len(src))
             similarities = x[src[i:j]].dot(z.T)
             nn = (-similarities).argsort(axis=1)
+            tmp_sim = - similarities
+            tmp_sim.sort(axis=1)
+            tmp_sim = - tmp_sim
             for k in range(j-i):                
                 translation[src[i+k]] = nn[k]
+                scores[src[i+k]] = tmp_sim[k]
     elif args.retrieval == 'invnn':  # Inverted nearest neighbor
         best_rank = np.full(len(src), x.shape[0], dtype=int)
         best_sim = np.full(len(src), -100, dtype=dtype)
@@ -327,24 +303,42 @@ def main():
             j = min(i + BATCH_SIZE, len(src))
             similarities = 2*x[src[i:j]].dot(z.T) - knn_sim_bwd  # Equivalent to the real CSLS scores for NN
             nn = (-similarities).argsort(axis=1)
+            tmp_sim = - similarities
+            tmp_sim.sort(axis=1)
+            tmp_sim = - tmp_sim
             for k in range(j-i):
                 translation[src[i+k]] = nn[k]
+                scores[src[i+k]] = tmp_sim[k]
     
     #print(translation[src[0]])
     #print(np.where(translation[src[0]] == 15))
     #print(np.where(translation[src[0]] == 15)[0][0])
-    
+
+    result = {}
+    src = sorted(src)
+    for i in src:
+      pred_word = [trg_ind2word[_] for _ in translation[i].tolist()]
+      pred_score = scores[i].tolist()
+      pred_pair = list(zip(pred_word, pred_score))
+      result[src_ind2word[i]] = {
+        'gold': [trg_ind2word[_] for _ in src2trg[i]],
+        'pred': pred_pair[:100]
+      }
+    import json
+    with open('debug_for_vecmap_csls_tmp.json', 'w', encoding='utf-8') as f:
+      json.dump(result, f, ensure_ascii=False, indent=2)
+  
     
     # apply supervised if needed
     if args.super:
       print("Loading model ...")
       model_filename = args.model
       print("Loading ortography stuff ...")
-      #ortpath = "./cache/ortho_nn_" + args.src_lid + "-" + args.tar_lid + "-" + args.idstring + "-dict.pickle"
-      ortpath = "./cache/ortho_nn_en-hr-ENHRFASTTEXT-dict.pickle"
+      ortpath = "./cache/ortho_nn_" + 'en-zh' + "-" + args.idstring + "-dict.pickle"
+      #ortpath = "./cache/ortho_nn_en-hr-ENHRFASTTEXT-dict.pickle"
       ornn = OrthoNNProvider(ortpath, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word)
 
-      translation_tmp = supervised_reranking2(translation, model_filename, x, z, src_ind2word, trg_ind2word, src_word2ind, trg_word2ind, args.K, src2trg, args.threshold, ornn, args.num_ort)
+      translation_tmp = supervised_reranking2(translation, model_filename, src_ind2word, trg_ind2word, src_word2ind, trg_word2ind, args.K, src2trg, args.threshold, ornn, args.num_ort)
       positions = [np.min([translation_tmp[i].index(x) + 1 for x in src2trg[i]]) for i in src] 
       translation = translation_tmp
       #p1 = len([p for p in positions if p == 1]) / len(positions)
@@ -355,8 +349,7 @@ def main():
     
     else:
       # src2trg[i] are gold translations, look them up in trnaslation[i] and pick the top ranked (min index) one
-      # 寻找x所在的rank，一个src可能对应多个tgt，取这个tgt中rank中最高的
-      positions = [np.min([np.where(asnumpy(translation[i]) == x)[0][0]+1 for x in src2trg[i]]) for i in src] 
+      positions = [np.min([np.where(translation[i] == x)[0][0]+1 for x in src2trg[i]]) for i in src] 
 
     assert len(positions) == len(src)
 
