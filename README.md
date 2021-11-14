@@ -1,3 +1,16 @@
+## work dir
+
+主要文件
+
+```
+|
+|-- dssm_train.py  # dssm 训练主函数
+|-- new_dssm.py    # dssm class 代码
+|-- DenseGraphConv.py  # gnn class 代码
+|-- art_wrapper.py     # 借助vecmap获取初始embedding的相关代码
+|-- ...
+```
+
 ## run
 
 直接用gnn-dssm从候选词（3w）中选择score最高的词作为结果
