@@ -20,6 +20,7 @@ from tqdm import tqdm
 import random
 from graph_utils import calc_csls_sim, topk_mean
 from new_dssm import Classifier as gnn_Classifier
+import json
 # src list of indexes from the source vocab to get neighbours for (these index the rows of X)
 # X embedding matrix for the source language 
 # Z embedding matrix for the target language
@@ -153,7 +154,10 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
   pos_tar_word_indexes = [tar_w2ind[i] for i in positive_tar]
   
   # src_word_ind -> tgt_word_ind 的dict
-  correct_mapping = dict(zip(pos_src_word_indexes, pos_tar_word_indexes))
+  correct_mapping = collections.defaultdict(set)
+  for s, t in zip(pos_src_word_indexes, pos_tar_word_indexes):
+    correct_mapping[s].add(t)
+  #correct_mapping = dict(zip(pos_src_word_indexes, pos_tar_word_indexes))
 
   # nns maps src word indexes to a list of tuples (tar_index, similarity)
   # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
@@ -165,11 +169,13 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
     for i in range(num_neg_per_pos):
       sampling_success = False
       while not sampling_success:
-        rand_neighbour_ind = nns[src_ind][randrange(top_k)][0]
-        if rand_neighbour_ind != correct_mapping[src_ind]:
+        tmp_ind = randrange(top_k)
+        rand_neighbour_ind = nns[src_ind][tmp_ind][0]
+        rand_score = nns[src_ind][tmp_ind][1]
+        if rand_neighbour_ind not in correct_mapping[src_ind] and (rand_neighbour_ind, rand_score) not in src_word2neg_words[src_ind]:
           sampling_success = True
           neg_examples.append((src_ind2w[src_ind], tar_ind2w[rand_neighbour_ind]))
-          src_word2neg_words[src_ind].append(rand_neighbour_ind)
+          src_word2neg_words[src_ind].append((rand_neighbour_ind, rand_score))
 
   # 从编辑距离最近的topk挑选negexample
   neg_examples_ed = []
@@ -180,7 +186,7 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
          sampling_success = False
          while not sampling_success:
           rand_neighbour = top_ortho_nns[randrange(top_k)][0]
-          if tar_w2ind[rand_neighbour] != correct_mapping[src_w2ind[src_w]]:
+          if tar_w2ind[rand_neighbour] not in correct_mapping[src_w2ind[src_w]] and tar_w2ind[rand_neighbour] not in src_word2neg_words[src_ind]:
             sampling_success = True
             neg_examples_ed.append((src_w, rand_neighbour))
             src_word2neg_words[src_w2ind[src_w]].append(tar_w2ind[rand_neighbour])
@@ -189,18 +195,30 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
   shuffle(return_list) 
   return return_list, src_word2neg_words
  
-def calc_monolingual_adj(embedding, threshold=0, method='cos'):
+def calc_monolingual_adj(embedding, threshold=0, method='cos', knn=0):
+  xp = get_array_module(embedding)
   if method == 'cos':
     adj = embedding.dot(embedding.T)
   elif method == 'csls':
     adj = calc_csls_sim(embedding, embedding, 10, True)
   else:
-    adj = np.identity(embedding.shape[0])
+    adj = xp.identity(embedding.shape[0])
     return adj
 
   _mask = adj > threshold
-  print(_mask.sum())
   adj = adj * _mask
+  print(_mask.sum())
+  if knn > 0:
+    sorted_sim_tmp = xp.sort(adj)
+    # max_neighbor_number+1 for ignore self
+    kth_sim_value_tmp = sorted_sim_tmp[:, -(knn+1)]
+    assert kth_sim_value_tmp.shape[0] == adj.shape[0]
+
+    for i in range(adj.shape[0]):
+        neighbor_mask = adj[i] >= kth_sim_value_tmp[i]
+        adj[i] = adj[i] * neighbor_mask
+
+  print((adj > 0).sum())
 
   return adj
 
@@ -222,10 +240,13 @@ def calc_csls_translation(x, z, BATCH_SIZE=512, csls_k=10):
 
 def run_dssm_trainning(args):
   SL_start_time = time.time()
-  #neg_method = "hard"
-  neg_top_k = 10
-  neg_per_pos = 9
-  neg_editdist_per_pos = 1
+
+
+  # 对于每个src，从tgt单词的cos相似度最高的neg_top_k个单词中随机采样neg_per_pos个
+  neg_top_k = 1000
+  neg_per_pos = args.hard_neg_sample
+  neg_editdist_per_pos = args.edit_neg_sample
+  debug = args.debug
  
   task_name = args.src_lid + "-" + args.tar_lid + "-" + args.idstring
   cng_cachefile = "./cache/ortho_nn_" + task_name + ".pickle"
@@ -234,7 +255,6 @@ def run_dssm_trainning(args):
  
 
   # load up the embeddings
-  # 这里是200k个embedding
   print("Loading embeddings from disk ...")
   dtype = "float32"
   srcfile = open(args.in_src, encoding="utf-8", errors='surrogateescape')
@@ -249,21 +269,27 @@ def run_dssm_trainning(args):
   trg_ind2word = {i: word for i, word in enumerate(trg_words)}
 
   # precomputing of orthographic nns, if needed
-  if not os.path.isfile(cng_cachefile) or not os.path.isfile(cng_nn_file):
-    print("Precomputing ortographic neighbours (will be cached for further calls)")
-    neighbours, neighbours_dict = precompute_orthographic_NN(src_words, trg_words, 50, cuda = True)
+  # 是否基于编辑距离选取负例
+  or_nn_provider = None
+  if neg_editdist_per_pos > 0:
+    cng_cachefile = "./cache/ortho_nn_" + task_name + ".pickle"
+    cng_nn_file = "./cache/ortho_nn_" + task_name + "-dict.pickle"
 
-    print("Writing top pairs to file ...")
-    with open(cng_cachefile, "wb") as outfile: 
-      pickle.dump(neighbours, outfile)
+    if not os.path.isfile(cng_cachefile) or not os.path.isfile(cng_nn_file):
+      print("Precomputing ortographic neighbours (will be cached for further calls)")
+      neighbours, neighbours_dict = precompute_orthographic_NN(src_words, trg_words, neg_top_k, cuda = True)
 
-    print("Writing precomputed ortho nns to file ...")
-    with open(cng_nn_file, "wb") as outfile: 
-      pickle.dump(neighbours_dict, outfile)
+      print("Writing top pairs to file ...")
+      with open(cng_cachefile, "wb") as outfile: 
+        pickle.dump(neighbours, outfile)
 
-  #if neg_editdist_per_pos > 0:
-  print("Loading the precomputed orthography nns ...")
-  or_nn_provider = OrthoNNProvider(cng_nn_file, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word)
+      print("Writing precomputed ortho nns to file ...")
+      with open(cng_nn_file, "wb") as outfile: 
+        pickle.dump(neighbours_dict, outfile)
+
+    #if neg_editdist_per_pos > 0:
+    print("Loading the precomputed orthography nns ...")
+    or_nn_provider = OrthoNNProvider(cng_nn_file, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word)
  
 
   # 读入训练集
@@ -292,12 +318,13 @@ def run_dssm_trainning(args):
 
   val_src_indices = [src_word2ind[t[0]] for t in val_examples]
   val_trg_indices = [trg_word2ind[t[1]] for t in val_examples] 
-
+  
   # 调用vecmap
   # 返回结果xw，zw是embedding矩阵，这个embedding矩阵是映射过后的embedding矩阵
   # call artetxe to get the initial alignment on the initial train dict
   print("Starting the Artetxe et al. alignment ...") 
-  xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)  
+  xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)
+  #xw, zw = x, z  
  
   # 生成负例,hard neg examples
   # 返回的是负例word pair的list
@@ -306,8 +333,26 @@ def run_dssm_trainning(args):
   neg_examples, src_w2negs =  generate_negative_examples_v2(pos_examples, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word, xw, zw, top_k = neg_top_k, num_neg_per_pos = neg_per_pos, num_neg_editdist = neg_editdist_per_pos, ornn = or_nn_provider)
   
   
-  print("tmp")
-  print("=======================")
+  if debug:
+    # 保存hard neg sample结果用于debug
+    neg_result = []
+    for src in src_w2negs:
+      src_word = src_ind2word[src]
+      neg_trg_word_list = src_w2negs[src]
+      neg_trg_word_list = sorted(neg_trg_word_list, key=lambda x:x[1], reverse=True)
+
+      neg_trg_word_list = [trg_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in neg_trg_word_list]
+      neg_result.append({
+        'src_word': src_word,
+        'hard_neg_sample_words': ','.join(neg_trg_word_list[:100])
+      })
+    
+    with open('orig_neg_select.json', 'w') as f:
+      json.dump(neg_result, f, indent=2, ensure_ascii=False)
+
+  for src in src_w2negs:
+    src_w2negs[src] = [_[0] for _ in src_w2negs[src]]
+
 
   print("Training initial classifier ...")
 
@@ -320,10 +365,65 @@ def run_dssm_trainning(args):
   #for _ in csls_translation:
   #  csls_translation[_] = asnumpy(csls_translation[_]).tolist()
 
-  x_adj = calc_monolingual_adj(xw, method='iden')
-  z_adj = calc_monolingual_adj(zw, method='iden')
-  #x_adj = np.identity(xw.shape[0])
-  #z_adj = np.identity(zw.shape[0])
+
+  if debug:
+    # 保存最近邻 以及 建图结果 用于debug
+    x_cos_sim = xw.dot(xw.T)
+    x_nn = (-x_cos_sim).argsort(axis=1)
+    tmp_sim = - x_cos_sim
+    tmp_sim.sort(axis=1)
+    tmp_sim = - tmp_sim
+
+    src_word2nn = {}
+    for i in range(x_cos_sim.shape[0]):
+      nn_word = [src_ind2word[_] for _ in x_nn[i].tolist()]
+      nn_score = tmp_sim[i].tolist()
+      src_word2nn[src_ind2word[i]] = list(zip(nn_word, nn_score))[:100]
+
+    z_cos_sim = zw.dot(zw.T)
+    z_nn = (-z_cos_sim).argsort(axis=1)
+    tmp_sim = - z_cos_sim
+    tmp_sim.sort(axis=1)
+    tmp_sim = - tmp_sim
+
+    tgt_word2nn = {}
+    for i in range(z_cos_sim.shape[0]):
+      nn_word = [trg_ind2word[_] for _ in z_nn[i].tolist()]
+      nn_score = tmp_sim[i].tolist()
+      tgt_word2nn[trg_ind2word[i]] = list(zip(nn_word, nn_score))[:100] 
+
+    with open('src_word2nn.json', 'w') as f:
+      json.dump(src_word2nn, f, indent=2, ensure_ascii=False) 
+    with open('tgt_word2nn.json', 'w') as f:
+      json.dump(tgt_word2nn, f, indent=2, ensure_ascii=False) 
+
+    x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
+    z_adj = calc_monolingual_adj(zw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
+
+    train_src_2_edge = {}
+    for src_ind in set(src_indices):
+        src_adj_index = np.where(x_adj[src_ind] > 0)[0]
+        adj_score = x_adj[src_ind][src_adj_index].tolist()
+        adj_index = src_adj_index.tolist()
+        word_score_pair = list(zip([src_ind2word[_] for _ in adj_index], adj_score))
+        train_src_2_edge[src_ind2word[src_ind]] = ', '.join([w + '(' + "%.5f" % s + ')' for w, s in word_score_pair])
+    with open('src_word2neiborword.json', 'w') as f:
+      json.dump(train_src_2_edge, f, indent=2, ensure_ascii=False)
+
+    train_tgt_2_edge = {}
+    for trg_ind in set(trg_indices):
+        trg_adj_index = np.where(z_adj[trg_ind] > 0)[0]
+        adj_score = z_adj[trg_ind][trg_adj_index].tolist()
+        adj_index = trg_adj_index.tolist()
+        word_score_pair = list(zip([trg_ind2word[_] for _ in adj_index], adj_score))
+        train_tgt_2_edge[trg_ind2word[trg_ind]] = ', '.join([w + '(' + "%.5f" % s + ')' for w, s in word_score_pair])
+    with open('tgt_word2neiborword.json', 'w') as f:
+      json.dump(train_tgt_2_edge, f, indent=2, ensure_ascii=False)  
+    
+
+  x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
+  z_adj = calc_monolingual_adj(zw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
+
 
   with torch.no_grad():
     torch_xw = torch.from_numpy(asnumpy(xw))
@@ -334,7 +434,13 @@ def run_dssm_trainning(args):
 
   train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
   val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
-  model = gnn_Classifier(torch_xw.shape[1], torch_zw.shape[1], 300, train_random_neg_select=512, epochs=100, train_batch_size=256)
+  model = gnn_Classifier(torch_xw.shape[1], 
+                        torch_zw.shape[1], 
+                        args.h_dim, 
+                        train_random_neg_select=args.random_neg_sample, 
+                        epochs=args.train_epochs, 
+                        train_batch_size=args.train_batch_size)
+
   model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set, csls_translation, src_i2w=src_ind2word, tgt_i2w=trg_ind2word, verbose=True)
 
   print("Writing output to files ...")
@@ -356,23 +462,42 @@ def run_dssm_trainning(args):
 
 if __name__ == "__main__":  
 
-   parser = argparse.ArgumentParser(description='Run classification based self learning for aligning embedding spaces in two languages.')
+  parser = argparse.ArgumentParser(description='Run classification based self learning for aligning embedding spaces in two languages.')
 
-   parser.add_argument('--train_dict', type=str, help='Name of the input dictionary file.', required = True)
-   parser.add_argument('--val_dict', type=str, help='Name of the input dictionary file.', required = True)
-   parser.add_argument('--in_src', type=str, help='Name of the input source languge embeddings file.', required = True)
-   parser.add_argument('--in_tar', type=str, help='Name of the input target language embeddings file.', required = True)
-   parser.add_argument('--src_lid', type=str, help='Source language id.', required = True)
-   parser.add_argument('--tar_lid', type=str, help='Target language id.', required = True)
-   parser.add_argument('--out_src', type=str, help='Name of the output source languge embeddings file.', required = True)
-   parser.add_argument('--out_tar', type=str, help='Name of the output target language embeddings file.', required = True)
+  parser.add_argument('--train_dict', type=str, help='Name of the input dictionary file.', required = True)
+  parser.add_argument('--val_dict', type=str, help='Name of the input dictionary file.', required = True)
+  parser.add_argument('--in_src', type=str, help='Name of the input source languge embeddings file.', required = True)
+  parser.add_argument('--in_tar', type=str, help='Name of the input target language embeddings file.', required = True)
+  parser.add_argument('--src_lid', type=str, help='Source language id.', required = True)
+  parser.add_argument('--tar_lid', type=str, help='Target language id.', required = True)
+  parser.add_argument('--out_src', type=str, help='Name of the output source languge embeddings file.', required = True)
+  parser.add_argument('--out_tar', type=str, help='Name of the output target language embeddings file.', required = True)
+  
+  
+  # graph related para
+  parser.add_argument('--graph_method', type=str, default='iden')
+  parser.add_argument('--graph_knn', type=int, default=3)
+  parser.add_argument('--graph_threshold', type=float, default=0.8)
 
-   parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)
-   parser.add_argument('--idstring', type=str,  default="EXP", help='Special id string that will be included in all generated model and cache files. Default is EXP.')
+  # model related para
+  parser.add_argument('--h_dim', type=int, default=300, help='hidden states dim in GNN')
+  parser.add_argument('--hard_neg_sample', type=int, default=256, help='number of hard negative examples')
+  parser.add_argument('--edit_neg_sample', type=int, default=0, help='number of hard negative examples based edit distanse')
+  parser.add_argument('--random_neg_sample', type=int, default=256, help='number of random negative examples')
+  parser.add_argument('--train_batch_size', type=int, default=256, help='train batch size')
+  parser.add_argument('--train_epochs', type=int, default=70, help='train epochs')
 
-   parser.add_argument('--art_supervision', type=str,  default="--supervised", help='Supervision argument to pass on to Artetxe et al. code. Default is "--supervised".')
 
-   args = parser.parse_args()
 
-   run_dssm_trainning(args)
+  
+  parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)
+  parser.add_argument('--idstring', type=str,  default="EXP", help='Special id string that will be included in all generated model and cache files. Default is EXP.')
+
+  parser.add_argument('--art_supervision', type=str,  default="--supervised", help='Supervision argument to pass on to Artetxe et al. code. Default is "--supervised".')
+
+  parser.add_argument('--debug', action='store_true', help='store debug info')
+
+  args = parser.parse_args()
+
+  run_dssm_trainning(args)
 

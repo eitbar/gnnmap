@@ -1,10 +1,14 @@
-CUDA_VISIBLE_DEVICES=1 python dssm_train.py --train_dict "./data/en-hr/yacle.train.freq.3k.en-hr.tsv" \
-                                            --val_dict "./data/en-hr/yacle.test.freq.2k.en-hr.tsv" \
-                                            --in_src "./data/en-hr/wiki.30k.en.vec" \
-                                            --in_tar "./data/en-hr/wiki.30k.hr.vec" \
+CUDA_VISIBLE_DEVICES=0 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5000.txt" \
+                                            --val_dict "./data/en-zh/en-zh.0-5000.txt" \
+                                            --in_src "./data/en-zh/wiki.10k.en.vec" \
+                                            --in_tar "./data/en-zh/wiki.10k.zh.vec" \
                                             --src_lid "en" \
-                                            --tar_lid "hr" \
-                                            --out_src "./data/en-hr/new.gnn.wiki.30k.en-hr-aligned.EN.vec" \
-                                            --out_tar "./data/en-hr/new.gnn.wiki.30k.en-hr-aligned.HR.vec" \
-                                            --model_filename "./data/en-hr/new.gnn.en-hr.ENHR-model.pickle" \
-                                            --idstring ENHRFASTTEXT
+                                            --tar_lid "zh" \
+                                            --out_src "./data/en-zh/overfit.wiki.10k.en-zh-aligned.EN.vec" \
+                                            --out_tar "./data/en-zh/overfit.wiki.10k.en-zh-aligned.ZH.vec" \
+                                            --model_filename "./data/en-zh/overfit.en-zh.ENHR-model.pickle" \
+                                            --idstring ENZHFASTTEXT \
+                                            --graph_method "iden" \
+                                            --h_dim 2048 \
+                                            --hard_neg_sample 512 \
+                                            --train_epochs 200 

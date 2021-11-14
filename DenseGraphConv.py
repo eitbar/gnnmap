@@ -70,7 +70,7 @@ class DenseGraphConv(nn.Module):
                  in_feats,
                  out_feats,
                  norm='both',
-                 bias=True,
+                 bias=False,
                  activation=None):
         super(DenseGraphConv, self).__init__()
         self._in_feats = in_feats

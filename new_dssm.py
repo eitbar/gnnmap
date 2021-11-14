@@ -22,7 +22,10 @@ from torch.utils.data import DataLoader, Sampler, Dataset, SequentialSampler
 class DssmDatasets(Dataset):
     def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_num=1000, pre_translation=None):
       self.lens = len(pos_examples)
-      self.vocab_size = vocab_size 
+      self.vocab_size = vocab_size
+      self.src2gold = collections.defaultdict(set)
+      for s, t in pos_examples:
+        self.src2gold[s].add(t)
       self.datas = self._build_dataset(pos_examples, src_w2negs)
       self.random_neg_num = random_neg_num
       self.pre_translation = pre_translation
@@ -57,7 +60,7 @@ class DssmDatasets(Dataset):
         sample_neg = f[1]
         _tgts = [pos_tgt]
         for _ in hard_neg + sample_neg:
-          if _ not in _tgts:
+          if _ not in _tgts and _ not in self.src2gold[pos_src]:
             _tgts.append(_)
         
         
@@ -107,6 +110,15 @@ class SimpleTower(nn.Module):
     def forward(self, node_feat, adj):
         h = self.conv(adj, node_feat)
         return h 
+
+class LinearTower(nn.Module):
+    def __init__(self, in_feat_dim, h_feat_dim):
+        super(LinearTower, self).__init__()
+        self.mapping = torch.nn.Linear(in_feat_dim, h_feat_dim, bias=False)
+
+    def forward(self, node_feat, adj):
+        h = self.mapping(node_feat)
+        return h     
 
 class GDSSM(nn.Module):
     
@@ -279,7 +291,7 @@ class Classifier:
                       'gold': [tgt_i2w[_] for _ in val_src2tgts[s]],
                       'pred': list(zip(pred_word, pred_scores))
                       }
-                  with open('debug.json', 'w', encoding='utf-8') as f:
+                  with open('overfit_debug.json', 'w', encoding='utf-8') as f:
                     json.dump(src2pred_result_top100, f, ensure_ascii=False, indent=2)
 
 
