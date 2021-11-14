@@ -8,6 +8,8 @@
 |-- new_dssm.py    # dssm class 代码
 |-- DenseGraphConv.py  # gnn class 代码
 |-- art_wrapper.py     # 借助vecmap获取初始embedding的相关代码
+|-- eval_use_csls.py   # evaluate 代码
+|-- gnn.yaml           # conda 环境
 |-- ...
 ```
 
