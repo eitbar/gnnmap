@@ -191,9 +191,15 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
             neg_examples_ed.append((src_w, rand_neighbour))
             src_word2neg_words[src_w2ind[src_w]].append(tar_w2ind[rand_neighbour])
 
+  src_word2nns = collections.defaultdict(list)
+  for src_ind in nns:
+    for nei_id, nei_score in nns[src_ind]:
+      src_word2nns[src_ind].append((nei_id, nei_score))
+
+
   return_list = neg_examples + neg_examples_ed
   shuffle(return_list) 
-  return return_list, src_word2neg_words
+  return return_list, src_word2neg_words, src_word2nns
  
 def calc_monolingual_adj(embedding, threshold=0, method='cos', knn=0):
   xp = get_array_module(embedding)
@@ -330,7 +336,7 @@ def run_dssm_trainning(args):
   # 返回的是负例word pair的list
   # generate negative examples for the current 
   print("Generating negative examples ...")
-  neg_examples, src_w2negs =  generate_negative_examples_v2(pos_examples, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word, xw, zw, top_k = neg_top_k, num_neg_per_pos = neg_per_pos, num_neg_editdist = neg_editdist_per_pos, ornn = or_nn_provider)
+  neg_examples, src_w2negs, src_w2nns =  generate_negative_examples_v2(pos_examples, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word, xw, zw, top_k = neg_top_k, num_neg_per_pos = neg_per_pos, num_neg_editdist = neg_editdist_per_pos, ornn = or_nn_provider)
   
   
   if debug:
@@ -349,6 +355,21 @@ def run_dssm_trainning(args):
     
     with open('orig_neg_select.json', 'w') as f:
       json.dump(neg_result, f, indent=2, ensure_ascii=False)
+
+    nns_result = []
+    for src in src_w2nns:
+      src_word = src_ind2word[src]
+      nns_trg_word_list = src_w2nns[src]
+      nns_trg_word_list = sorted(nns_trg_word_list, key=lambda x:x[1], reverse=True)
+
+      nns_trg_word_list = [trg_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in nns_trg_word_list]
+      nns_result.append({
+        'src_word': src_word,
+        'nns_words': ','.join(nns_trg_word_list[:100])
+      })
+    
+    with open('orig_nns_select.json', 'w') as f:
+      json.dump(nns_result, f, indent=2, ensure_ascii=False)
 
   for src in src_w2negs:
     src_w2negs[src] = [_[0] for _ in src_w2negs[src]]
@@ -419,6 +440,7 @@ def run_dssm_trainning(args):
         train_tgt_2_edge[trg_ind2word[trg_ind]] = ', '.join([w + '(' + "%.5f" % s + ')' for w, s in word_score_pair])
     with open('tgt_word2neiborword.json', 'w') as f:
       json.dump(train_tgt_2_edge, f, indent=2, ensure_ascii=False)  
+
     
 
   x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
@@ -439,7 +461,8 @@ def run_dssm_trainning(args):
                         args.h_dim, 
                         train_random_neg_select=args.random_neg_sample, 
                         epochs=args.train_epochs, 
-                        train_batch_size=args.train_batch_size)
+                        train_batch_size=args.train_batch_size,
+                        model_name=args.model_name)
 
   model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set, csls_translation, src_i2w=src_ind2word, tgt_i2w=trg_ind2word, verbose=True)
 
@@ -480,6 +503,7 @@ if __name__ == "__main__":
   parser.add_argument('--graph_threshold', type=float, default=0.8)
 
   # model related para
+  parser.add_argument('--model_name', type=str, choices=["gnn", "linear", "hh"], default="gnn", help='select model method')
   parser.add_argument('--h_dim', type=int, default=300, help='hidden states dim in GNN')
   parser.add_argument('--hard_neg_sample', type=int, default=256, help='number of hard negative examples')
   parser.add_argument('--edit_neg_sample', type=int, default=0, help='number of hard negative examples based edit distanse')

@@ -2,7 +2,6 @@ from numpy.random.mtrand import exponential
 from DenseGraphConv import DenseGraphConv
 import torch
 from torch import embedding, nn
-import dgl
 import numpy as np
 from torch._C import device
 import torch.nn.functional as F
@@ -14,10 +13,11 @@ import json
 from tqdm import tqdm
 import random
 from random import randrange
-from sklearn.utils import shuffle
+#from sklearn.utils import shuffle
 import collections
-from transformers import WarmupLinearSchedule
+#from transformers import WarmupLinearSchedule
 from torch.utils.data import DataLoader, Sampler, Dataset, SequentialSampler
+
 
 class DssmDatasets(Dataset):
     def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_num=1000, pre_translation=None):
@@ -120,12 +120,37 @@ class LinearTower(nn.Module):
         h = self.mapping(node_feat)
         return h     
 
+class HouseholderTower(nn.Module):
+    def __init__(self, in_feat_dim, hhr_number):
+        super(HouseholderTower, self).__init__()
+        print("use HouseholderTower")
+        self.mapping_vectors = nn.ParameterList([nn.Parameter(torch.randn((in_feat_dim, 1), requires_grad=True)) 
+                                                      for _ in range(hhr_number)])
+
+    def _householderReflection(self, v, x):
+        iden = torch.eye(v.shape[1])
+        iden = iden.to(x.device)
+        qv = iden - torch.matmul(v, v.T) / torch.matmul(v.T, v)
+        return torch.matmul(x, qv)
+
+    def forward(self, node_feat, adj):
+        h = node_feat
+        for i, v in enumerate(self.mapping_vectors):
+            h = self._householderReflection(v, h)
+        return h  
+
+MODELDICT = {
+  "linear" : LinearTower,
+  "gnn" : SimpleTower,
+  "hh" : HouseholderTower
+}
+
 class GDSSM(nn.Module):
     
-    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim):
+    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, model_name="gnn"):
         super(GDSSM, self).__init__()
-        self.src_tower = SimpleTower(src_in_feat_dim, h_feat_dim)
-        self.tgt_tower = SimpleTower(tgt_in_feat_dim, h_feat_dim)
+        self.src_tower = MODELDICT[model_name](src_in_feat_dim, h_feat_dim)
+        self.tgt_tower = MODELDICT[model_name](tgt_in_feat_dim, h_feat_dim)
 
     def forward(self, node_feat_src, adj_src, node_feat_tgt, adj_tgt, src_index, tgts_index):
         src_h = self.src_tower(node_feat_src, adj_src)
@@ -137,16 +162,20 @@ class GDSSM(nn.Module):
         src_h_t_norm = F.normalize(src_h_t)
         tgt_h_t_norm = F.normalize(tgt_h_t, dim=2)
 
+
+
         sim = torch.matmul(src_h_t_norm.unsqueeze(1), tgt_h_t_norm.transpose(1,2))
         logits = sim.squeeze()     
         return logits
 
 
 class Classifier:
-    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, device='gpu', epochs=100, lr=0.0001, train_batch_size=256, train_random_neg_select=512):
-        print(device == 'gpu')
+    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, 
+                  device='gpu', epochs=100, lr=0.0001, train_batch_size=256, train_random_neg_select=512, 
+                  model_name="gnn"):
+        
         self.device = torch.device("cuda" if torch.cuda.is_available() and device == 'gpu' else "cpu")
-        self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim)
+        self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, model_name)
         self.epochs = epochs
         self.train_batch_size = train_batch_size
         self.loss_func = nn.CrossEntropyLoss()
@@ -165,6 +194,8 @@ class Classifier:
       neg_si = logits[:, 1:]
       diff = pos_si[:, None] - neg_si
       bpr_loss = - diff.sigmoid().log().mean(1)
+      #for i, _ in enumerate(diff.detach().cpu().numpy().tolist()):
+      #  print(i, _[:20])
       bpr_loss_batch_mean = bpr_loss.mean()
       return bpr_loss_batch_mean
 
@@ -222,7 +253,13 @@ class Classifier:
                 #for _, _src in enumerate(src_index):
                 #  if _src == 1752:
                 #    print(tgts_index[_])
+                #if e % 5 == 0:
+                #  src_word = [src_i2w[_] for _ in src_index.cpu().numpy().tolist()]
+                #  tgt_word = [tgt_i2w[_[0]] for _ in tgts_index.cpu().numpy().tolist()]
+                #  for i_, st_pair_ in enumerate(zip(src_word, tgt_word)):
+                #    print(i_, st_pair_[0], st_pair_[1])
 
+                
                 logits = model(src_x, src_a, tgt_x, tgt_a, src_index, tgts_index)
                 loss = loss_func(logits, labels_index)
 
@@ -291,7 +328,7 @@ class Classifier:
                       'gold': [tgt_i2w[_] for _ in val_src2tgts[s]],
                       'pred': list(zip(pred_word, pred_scores))
                       }
-                  with open('overfit_debug.json', 'w', encoding='utf-8') as f:
+                  with open('tmp.json', 'w', encoding='utf-8') as f:
                     json.dump(src2pred_result_top100, f, ensure_ascii=False, indent=2)
 
 

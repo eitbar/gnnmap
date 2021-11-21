@@ -1,14 +1,16 @@
-CUDA_VISIBLE_DEVICES=0 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5000.txt" \
+CUDA_VISIBLE_DEVICES=1 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5000.txt" \
                                             --val_dict "./data/en-zh/en-zh.0-5000.txt" \
                                             --in_src "./data/en-zh/wiki.10k.en.vec" \
                                             --in_tar "./data/en-zh/wiki.10k.zh.vec" \
                                             --src_lid "en" \
                                             --tar_lid "zh" \
-                                            --out_src "./data/en-zh/overfit.wiki.10k.en-zh-aligned.EN.vec" \
-                                            --out_tar "./data/en-zh/overfit.wiki.10k.en-zh-aligned.ZH.vec" \
-                                            --model_filename "./data/en-zh/overfit.en-zh.ENHR-model.pickle" \
+                                            --out_src "./data/en-zh/overfit.hh.wiki.10k.en-zh-aligned.EN.vec" \
+                                            --out_tar "./data/en-zh/overfit.hh.wiki.10k.en-zh-aligned.ZH.vec" \
+                                            --model_filename "./data/en-zh/overfit.hh.en-zh.ENHR-model.pickle" \
                                             --idstring ENZHFASTTEXT \
                                             --graph_method "iden" \
-                                            --h_dim 2048 \
+                                            --h_dim 20 \
                                             --hard_neg_sample 512 \
-                                            --train_epochs 200 
+                                            --train_batch_size 256 \
+                                            --train_epochs 50 \
+                                            --model_name "hh"
