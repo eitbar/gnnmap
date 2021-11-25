@@ -328,9 +328,12 @@ def run_dssm_trainning(args):
   # 调用vecmap
   # 返回结果xw，zw是embedding矩阵，这个embedding矩阵是映射过后的embedding矩阵
   # call artetxe to get the initial alignment on the initial train dict
-  print("Starting the Artetxe et al. alignment ...") 
-  xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)
-  #xw, zw = x, z  
+  if args.use_origin_emb:
+    xw, zw = x, z 
+  else:
+    print("Starting the Artetxe et al. alignment ...") 
+    xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)
+
  
   # 生成负例,hard neg examples
   # 返回的是负例word pair的list
@@ -461,6 +464,7 @@ def run_dssm_trainning(args):
                         args.h_dim, 
                         train_random_neg_select=args.random_neg_sample, 
                         epochs=args.train_epochs, 
+                        lr=args.lr,
                         train_batch_size=args.train_batch_size,
                         model_name=args.model_name)
 
@@ -503,13 +507,15 @@ if __name__ == "__main__":
   parser.add_argument('--graph_threshold', type=float, default=0.8)
 
   # model related para
-  parser.add_argument('--model_name', type=str, choices=["gnn", "linear", "hh"], default="gnn", help='select model method')
+  parser.add_argument('--model_name', type=str, choices=["gnn", "linear", "hh", "nl_gnn"], default="gnn", help='select model method')
   parser.add_argument('--h_dim', type=int, default=300, help='hidden states dim in GNN')
   parser.add_argument('--hard_neg_sample', type=int, default=256, help='number of hard negative examples')
   parser.add_argument('--edit_neg_sample', type=int, default=0, help='number of hard negative examples based edit distanse')
   parser.add_argument('--random_neg_sample', type=int, default=256, help='number of random negative examples')
   parser.add_argument('--train_batch_size', type=int, default=256, help='train batch size')
   parser.add_argument('--train_epochs', type=int, default=70, help='train epochs')
+  parser.add_argument('--lr', type=float, default=0.0001, help='learning rate')
+  parser.add_argument('--use_origin_emb', action='store_true', help='use origin fasttext embeddings as model input')
 
 
 

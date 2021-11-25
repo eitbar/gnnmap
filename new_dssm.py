@@ -101,10 +101,20 @@ class BaseTower(nn.Module):
         p_h = self.proj(h)
         return p_h
 
-class SimpleTower(nn.Module):
+class GraphTower(nn.Module):
 
     def __init__(self, in_feat_dim, h_feat_dim):
-        super(SimpleTower, self).__init__()
+        super(GraphTower, self).__init__()
+        self.conv = DenseGraphConv(in_feat_dim, h_feat_dim, bias=True, activation=torch.nn.ReLU())
+
+    def forward(self, node_feat, adj):
+        h = self.conv(adj, node_feat)
+        return h 
+
+class SimpleGraphTower(nn.Module):
+
+    def __init__(self, in_feat_dim, h_feat_dim):
+        super(SimpleGraphTower, self).__init__()
         self.conv = DenseGraphConv(in_feat_dim, h_feat_dim)
 
     def forward(self, node_feat, adj):
@@ -128,8 +138,9 @@ class HouseholderTower(nn.Module):
                                                       for _ in range(hhr_number)])
 
     def _householderReflection(self, v, x):
-        iden = torch.eye(v.shape[1])
+        iden = torch.eye(v.shape[0])
         iden = iden.to(x.device)
+        #v = F.normalize(v)
         qv = iden - torch.matmul(v, v.T) / torch.matmul(v.T, v)
         return torch.matmul(x, qv)
 
@@ -141,7 +152,8 @@ class HouseholderTower(nn.Module):
 
 MODELDICT = {
   "linear" : LinearTower,
-  "gnn" : SimpleTower,
+  "nl_gnn" : GraphTower,
+  "gnn" : SimpleGraphTower,
   "hh" : HouseholderTower
 }
 
