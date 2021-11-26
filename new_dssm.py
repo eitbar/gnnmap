@@ -63,19 +63,6 @@ class DssmDatasets(Dataset):
           if _ not in _tgts and _ not in self.src2gold[pos_src]:
             _tgts.append(_)
         
-        
-        """
-        while(len(random_neg_list) < self.random_neg_num):
-          #print(len(random_neg_list))
-          if self.pre_translation is None:
-            random_neg_wi = random.randint(0, self.vocab_size - 1)
-          else:
-            random_neg_wi = random.choice(self.pre_translation[f[0]][:10000])
-          if random_neg_wi in random_neg_list or random_neg_wi == f[1]:
-            continue
-          else:
-            random_neg_list.append(random_neg_wi)
-        """
         tgts_list.append(_tgts)
         labels_list.append(0)
 
@@ -173,8 +160,6 @@ class GDSSM(nn.Module):
 
         src_h_t_norm = F.normalize(src_h_t)
         tgt_h_t_norm = F.normalize(tgt_h_t, dim=2)
-
-
 
         sim = torch.matmul(src_h_t_norm.unsqueeze(1), tgt_h_t_norm.transpose(1,2))
         logits = sim.squeeze()     
