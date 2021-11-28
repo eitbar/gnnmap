@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=3 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5000.txt" \
+CUDA_VISIBLE_DEVICES=0 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5000.txt" \
                                             --val_dict "./data/en-zh/en-zh.5000-6500.txt" \
                                             --in_src "./data/en-zh/wiki.10k.en.vec" \
                                             --in_tar "./data/en-zh/wiki.10k.zh.vec" \

@@ -1,28 +1,112 @@
-from numpy.lib.nanfunctions import nanstd
 import embeddings
 from cupy_utils import *
-import cupyx
-import os
 import argparse
 import collections
 import numpy as np
 import sys
-from scipy.sparse import csr_matrix, hstack as sparse_hstack
-from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 import pickle
 import time
 from random import randrange
 from art_wrapper import run_supervised_alignment
 from sklearn.utils import shuffle
-import math
-import textdistance
 import torch
 from tqdm import tqdm
 import random
 from graph_utils import calc_csls_sim, topk_mean
-from new_dssm import Classifier as gnn_Classifier
+from new_dssm import DssmTrainer
 import json
+import copy
 
+def debug_neg_sampling_record(src_w2negs, src_ind2word, trg_ind2word, src_w2nns, train_set):
+    # 保存hard neg sample结果用于debug
+    neg_result = []
+    correct_mapping = collections.defaultdict(set)
+    for s, t in train_set:
+      correct_mapping[s].add(t)    
+
+    for src in src_w2negs:
+      src_word = src_ind2word[src]
+      neg_trg_word_list = src_w2negs[src]
+      neg_trg_word_list = sorted(neg_trg_word_list, key=lambda x:x[1], reverse=True)
+
+      neg_trg_word_list = [trg_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in neg_trg_word_list]
+      neg_result.append({
+        'src_word': src_word,
+        'gold_tgt': [trg_ind2word[_] for _ in correct_mapping[src]],
+        'hard_neg_sample_words': ','.join(neg_trg_word_list[:100])
+      })
+    
+    with open('orig_neg_select_v2.json', 'w') as f:
+      json.dump(neg_result, f, indent=2, ensure_ascii=False)
+
+    nns_result = []
+    for src in src_w2nns:
+      src_word = src_ind2word[src]
+      nns_trg_word_list = src_w2nns[src]
+      nns_trg_word_list = sorted(nns_trg_word_list, key=lambda x:x[1], reverse=True)
+
+      nns_trg_word_list = [trg_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in nns_trg_word_list]
+      nns_result.append({
+        'src_word': src_word,
+        'nns_words': ','.join(nns_trg_word_list[:100])
+      })
+    
+    with open('orig_nns_select.json', 'w') as f:
+      json.dump(nns_result, f, indent=2, ensure_ascii=False)
+
+def debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word):
+    x_cos_sim = xw.dot(xw.T)
+    x_nn = (-x_cos_sim).argsort(axis=1)
+    tmp_sim = - x_cos_sim
+    tmp_sim.sort(axis=1)
+    tmp_sim = - tmp_sim
+
+    src_word2nn = {}
+    for i in range(x_cos_sim.shape[0]):
+      nn_word = [src_ind2word[_] for _ in x_nn[i].tolist()]
+      nn_score = tmp_sim[i].tolist()
+      src_word2nn[src_ind2word[i]] = list(zip(nn_word, nn_score))[:100]
+
+    z_cos_sim = zw.dot(zw.T)
+    z_nn = (-z_cos_sim).argsort(axis=1)
+    tmp_sim = - z_cos_sim
+    tmp_sim.sort(axis=1)
+    tmp_sim = - tmp_sim
+
+    tgt_word2nn = {}
+    for i in range(z_cos_sim.shape[0]):
+      nn_word = [trg_ind2word[_] for _ in z_nn[i].tolist()]
+      nn_score = tmp_sim[i].tolist()
+      tgt_word2nn[trg_ind2word[i]] = list(zip(nn_word, nn_score))[:100] 
+
+    with open('src_word2nn.json', 'w') as f:
+      json.dump(src_word2nn, f, indent=2, ensure_ascii=False) 
+    with open('tgt_word2nn.json', 'w') as f:
+      json.dump(tgt_word2nn, f, indent=2, ensure_ascii=False)
+
+def debug_graph_structual(xw, zw, src_ind2word, trg_ind2word, src_indices, trg_indices):
+    x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
+    z_adj = calc_monolingual_adj(zw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
+
+    train_src_2_edge = {}
+    for src_ind in set(src_indices):
+        src_adj_index = np.where(x_adj[src_ind] > 0)[0]
+        adj_score = x_adj[src_ind][src_adj_index].tolist()
+        adj_index = src_adj_index.tolist()
+        word_score_pair = list(zip([src_ind2word[_] for _ in adj_index], adj_score))
+        train_src_2_edge[src_ind2word[src_ind]] = ', '.join([w + '(' + "%.5f" % s + ')' for w, s in word_score_pair])
+    with open('src_word2neiborword.json', 'w') as f:
+      json.dump(train_src_2_edge, f, indent=2, ensure_ascii=False)
+
+    train_tgt_2_edge = {}
+    for trg_ind in set(trg_indices):
+        trg_adj_index = np.where(z_adj[trg_ind] > 0)[0]
+        adj_score = z_adj[trg_ind][trg_adj_index].tolist()
+        adj_index = trg_adj_index.tolist()
+        word_score_pair = list(zip([trg_ind2word[_] for _ in adj_index], adj_score))
+        train_tgt_2_edge[trg_ind2word[trg_ind]] = ', '.join([w + '(' + "%.5f" % s + ')' for w, s in word_score_pair])
+    with open('tgt_word2neiborword.json', 'w') as f:
+      json.dump(train_tgt_2_edge, f, indent=2, ensure_ascii=False)
 
 def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = True):
   # get Z to the GPU once in the beginning (it can be big, seems like a waste to copy it again for every batch)
@@ -110,7 +194,6 @@ def generate_negative_examples_v1(positive_examples, src_w2ind, tar_w2ind, src_i
   shuffle(return_list) 
   return return_list, src_word2neg_words, src_word2nns
 
-
 # method can be "random", "hard" or "mix"
 def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos): 
   l = len(positive_examples)
@@ -136,16 +219,21 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
   neg_examples = []  
   for src_ind in correct_mapping:
     # 将src对应的多个tgt word的topk nearest neighbor word index构建集合
-    tgt_nn_wi = [_[0] for tgt_wi in correct_mapping[src_ind] for _ in tgt_nns[tgt_wi][:top_k]]
-    tgt_nn_wi = list(set(tgt_nn_wi))
-    # 去掉groundtruth
-    candidate_neg_wi = list(set(tgt_nn_wi) - correct_mapping[src_ind])
+    tgt_nn_wi = [_ for tgt_wi in correct_mapping[src_ind] for _ in tgt_nns[tgt_wi][:top_k]]
+    tgt_nn_wi = sorted(tgt_nn_wi, key=lambda x:x[1])
+    # 去掉groundtruth与重复单词
+    candidate_neg_wi2s = dict()
+    for wi, s in tgt_nn_wi:
+      if wi not in candidate_neg_wi2s and wi not in correct_mapping[src_ind]:
+        candidate_neg_wi2s[wi] = s
+
+    candidate_neg_wi = sorted(list(candidate_neg_wi2s.items()), key=lambda x:x[1], reverse=True)
     # 采样num_neg_per_pos个单词
     hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
     # 加入采样结果
-    for neg_wi in hard_neg_inds_sample: 
+    for neg_wi, neg_s in hard_neg_inds_sample: 
       neg_examples.append((src_ind2w[src_ind], tar_ind2w[neg_wi]))
-      src_word2neg_words[src_ind].append((neg_wi, 0))
+      src_word2neg_words[src_ind].append((neg_wi, neg_s))
 
   tgt_word2nns = collections.defaultdict(list)
   for tgt_ind in tgt_nns:
@@ -155,7 +243,6 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
   return_list = neg_examples
   shuffle(return_list) 
   return return_list, src_word2neg_words, tgt_word2nns
-
 
 # method can be "random", "hard" or "mix"
 def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos): 
@@ -186,16 +273,21 @@ def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_i
   neg_examples = []  
   for src_ind in correct_mapping:
     # 将src对应的多个tgt word的topk nearest neighbor word index构建集合
-    tgt_nn_wi = [_[0] for tgt_wi in correct_mapping[src_ind] for _ in tgt_nns[tgt_wi][:top_k]]
-    tgt_nn_wi = list(set(tgt_nn_wi))
-    # 去掉groundtruth
-    candidate_neg_wi = list(set(tgt_nn_wi) - correct_mapping[src_ind])
+    tgt_nn_wi = [_ for tgt_wi in correct_mapping[src_ind] for _ in tgt_nns[tgt_wi][:top_k]]
+    tgt_nn_wi = sorted(tgt_nn_wi, key=lambda x:x[1])
+    # 去掉groundtruth与重复单词
+    candidate_neg_wi2s = dict()
+    for wi, s in tgt_nn_wi:
+      if wi not in candidate_neg_wi2s and wi not in correct_mapping[src_ind]:
+        candidate_neg_wi2s[wi] = s
+
+    candidate_neg_wi = sorted(list(candidate_neg_wi2s.items()), key=lambda x:x[1], reverse=True)
     # 采样num_neg_per_pos个单词
     hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
     # 加入采样结果
-    for neg_wi in hard_neg_inds_sample: 
+    for neg_wi, neg_s in hard_neg_inds_sample: 
       neg_examples.append((src_ind2w[src_ind], tar_ind2w[neg_wi]))
-      src_word2neg_words[src_ind].append((neg_wi, 0))
+      src_word2neg_words[src_ind].append((neg_wi, neg_s))
 
   # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
   # 取训练集中出现的pos_src的最近邻pos_src_nn1, pos_src_nn2, ...
@@ -221,8 +313,6 @@ def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_i
   shuffle(return_list) 
   return return_list, src_word2neg_words, tgt_word2nns
  
-
-
 def calc_monolingual_adj(embedding, threshold=0, method='cos', knn=0):
   xp = get_array_module(embedding)
   if method == 'cos':
@@ -293,7 +383,7 @@ def run_dssm_trainning(args):
 
 
   # 对于每个src，从tgt单词的cos相似度最高的neg_top_k个单词中随机采样neg_per_pos个
-  neg_top_k = 1000
+  neg_top_k = 500
   neg_per_pos = args.hard_neg_sample
   debug = args.debug
   model_out_filename = args.model_filename
@@ -328,6 +418,9 @@ def run_dssm_trainning(args):
       if src in src_word2ind and trg in trg_word2ind:
           val_examples.append((src,trg))
 
+  train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
+  val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
+
   print("train data size: ", len(pos_examples))
   print("test data size: ", len(val_examples))
 
@@ -350,66 +443,31 @@ def run_dssm_trainning(args):
     xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)
 
  
+  embeddings.normalize(xw, ['unit', 'center', 'unit'])
+  embeddings.normalize(zw, ['unit', 'center', 'unit'])
+
   # 生成负例,hard neg examples
   # 返回的是负例word pair的list
   # generate negative examples for the current 
   print("Generating negative examples ...")
-  neg_examples, src_w2negs, src_w2nns =  generate_negative_examples_v3(pos_examples, 
+  neg_examples, src_w2negs, src_w2nns =  generate_negative_examples_v1(pos_examples, 
                                                                        src_word2ind, 
                                                                        trg_word2ind, 
                                                                        src_ind2word, 
                                                                        trg_ind2word, 
-                                                                       xw, 
-                                                                       zw, 
+                                                                       copy.deepcopy(xw), 
+                                                                       copy.deepcopy(zw), 
                                                                        top_k = neg_top_k, 
                                                                        num_neg_per_pos = neg_per_pos)
-  
-  
   if debug:
     # 保存hard neg sample结果用于debug
-    neg_result = []
-    for src in src_w2negs:
-      src_word = src_ind2word[src]
-      neg_trg_word_list = src_w2negs[src]
-      neg_trg_word_list = sorted(neg_trg_word_list, key=lambda x:x[1], reverse=True)
-
-      neg_trg_word_list = [trg_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in neg_trg_word_list]
-      neg_result.append({
-        'src_word': src_word,
-        'hard_neg_sample_words': ','.join(neg_trg_word_list[:100])
-      })
-    
-    with open('orig_neg_select.json', 'w') as f:
-      json.dump(neg_result, f, indent=2, ensure_ascii=False)
-
-    nns_result = []
-    for src in src_w2nns:
-      src_word = src_ind2word[src]
-      nns_trg_word_list = src_w2nns[src]
-      nns_trg_word_list = sorted(nns_trg_word_list, key=lambda x:x[1], reverse=True)
-
-      nns_trg_word_list = [trg_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in nns_trg_word_list]
-      nns_result.append({
-        'src_word': src_word,
-        'nns_words': ','.join(nns_trg_word_list[:100])
-      })
-    
-    with open('orig_nns_select.json', 'w') as f:
-      json.dump(nns_result, f, indent=2, ensure_ascii=False)
-
+    debug_neg_sampling_record(src_w2negs, src_ind2word, trg_ind2word, src_w2nns, train_set)
+  
   for src in src_w2negs:
     src_w2negs[src] = [_[0] for _ in src_w2negs[src]]
 
 
   print("Training initial classifier ...")
-
-  csls_translation = None
-
-  #csls_translation = calc_csls_translation(xw, zw)
-  #for _ in csls_translation:
-  #  csls_translation[_] = asnumpy(csls_translation[_]).tolist()
-  embeddings.normalize(xw, ['unit', 'center', 'unit'])
-  embeddings.normalize(zw, ['unit', 'center', 'unit'])
 
   if args.use_whitening:
     print("use_whitening")
@@ -417,64 +475,13 @@ def run_dssm_trainning(args):
     zw = whitening_transformation_v2(zw)
 
   if debug:
-    # 保存最近邻 以及 建图结果 用于debug
-    x_cos_sim = xw.dot(xw.T)
-    x_nn = (-x_cos_sim).argsort(axis=1)
-    tmp_sim = - x_cos_sim
-    tmp_sim.sort(axis=1)
-    tmp_sim = - tmp_sim
-
-    src_word2nn = {}
-    for i in range(x_cos_sim.shape[0]):
-      nn_word = [src_ind2word[_] for _ in x_nn[i].tolist()]
-      nn_score = tmp_sim[i].tolist()
-      src_word2nn[src_ind2word[i]] = list(zip(nn_word, nn_score))[:100]
-
-    z_cos_sim = zw.dot(zw.T)
-    z_nn = (-z_cos_sim).argsort(axis=1)
-    tmp_sim = - z_cos_sim
-    tmp_sim.sort(axis=1)
-    tmp_sim = - tmp_sim
-
-    tgt_word2nn = {}
-    for i in range(z_cos_sim.shape[0]):
-      nn_word = [trg_ind2word[_] for _ in z_nn[i].tolist()]
-      nn_score = tmp_sim[i].tolist()
-      tgt_word2nn[trg_ind2word[i]] = list(zip(nn_word, nn_score))[:100] 
-
-    with open('src_word2nn.json', 'w') as f:
-      json.dump(src_word2nn, f, indent=2, ensure_ascii=False) 
-    with open('tgt_word2nn.json', 'w') as f:
-      json.dump(tgt_word2nn, f, indent=2, ensure_ascii=False) 
-
-    x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
-    z_adj = calc_monolingual_adj(zw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
-
-    train_src_2_edge = {}
-    for src_ind in set(src_indices):
-        src_adj_index = np.where(x_adj[src_ind] > 0)[0]
-        adj_score = x_adj[src_ind][src_adj_index].tolist()
-        adj_index = src_adj_index.tolist()
-        word_score_pair = list(zip([src_ind2word[_] for _ in adj_index], adj_score))
-        train_src_2_edge[src_ind2word[src_ind]] = ', '.join([w + '(' + "%.5f" % s + ')' for w, s in word_score_pair])
-    with open('src_word2neiborword.json', 'w') as f:
-      json.dump(train_src_2_edge, f, indent=2, ensure_ascii=False)
-
-    train_tgt_2_edge = {}
-    for trg_ind in set(trg_indices):
-        trg_adj_index = np.where(z_adj[trg_ind] > 0)[0]
-        adj_score = z_adj[trg_ind][trg_adj_index].tolist()
-        adj_index = trg_adj_index.tolist()
-        word_score_pair = list(zip([trg_ind2word[_] for _ in adj_index], adj_score))
-        train_tgt_2_edge[trg_ind2word[trg_ind]] = ', '.join([w + '(' + "%.5f" % s + ')' for w, s in word_score_pair])
-    with open('tgt_word2neiborword.json', 'w') as f:
-      json.dump(train_tgt_2_edge, f, indent=2, ensure_ascii=False)  
-
-    
-
+    # 保存最近邻用于debug
+    debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word)
+    # 保存建图结果用于debug
+    debug_graph_structual(xw, zw, src_ind2word, trg_ind2word, src_indices, trg_indices)
+  
   x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
   z_adj = calc_monolingual_adj(zw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
-
 
   with torch.no_grad():
     torch_xw = torch.from_numpy(asnumpy(xw))
@@ -482,19 +489,17 @@ def run_dssm_trainning(args):
     torch_x_adj = torch.from_numpy(asnumpy(x_adj))
     torch_z_adj = torch.from_numpy(asnumpy(z_adj))
 
-
-  train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
-  val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
-  model = gnn_Classifier(torch_xw.shape[1], 
+  model = DssmTrainer(torch_xw.shape[1], 
                         torch_zw.shape[1], 
                         args.h_dim, 
-                        train_random_neg_select=args.random_neg_sample, 
+                        random_neg_sample=args.random_neg_sample, 
                         epochs=args.train_epochs, 
                         lr=args.lr,
                         train_batch_size=args.train_batch_size,
-                        model_name=args.model_name)
+                        model_name=args.model_name,
+                        model_save_file=args.model_filename)
 
-  model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set, csls_translation, src_i2w=src_ind2word, tgt_i2w=trg_ind2word, verbose=True)
+  model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set, src_i2w=src_ind2word, tgt_i2w=trg_ind2word, verbose=True)
 
   print("Writing output to files ...")
   # write res to disk
@@ -506,9 +511,6 @@ def run_dssm_trainning(args):
   embeddings.write(trg_words, zw, trgfile)
   srcfile.close()
   trgfile.close()
-  print("Saving the supervised model to disk ...")
-  with open("./" + model_out_filename, "wb") as outfile:
-    pickle.dump(model, outfile)
   print("SL FINISHED " + str(time.time() - SL_start_time))
   
 
