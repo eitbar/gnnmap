@@ -96,7 +96,7 @@ class GraphTower(nn.Module):
 
     def forward(self, node_feat, adj):
         h = self.conv(adj, node_feat)
-        return h 
+        return h
 
 class SimpleGraphTower(nn.Module):
 
@@ -115,7 +115,7 @@ class LinearTower(nn.Module):
 
     def forward(self, node_feat, adj):
         h = self.mapping(node_feat)
-        return h     
+        return h
 
 class HouseholderTower(nn.Module):
     def __init__(self, in_feat_dim, hhr_number):

@@ -1,3 +1,4 @@
+from numpy.lib.nanfunctions import nanstd
 import embeddings
 from cupy_utils import *
 import cupyx
@@ -154,7 +155,74 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
   return_list = neg_examples
   shuffle(return_list) 
   return return_list, src_word2neg_words, tgt_word2nns
+
+
+# method can be "random", "hard" or "mix"
+def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos): 
+  l = len(positive_examples)
+  src_word2neg_words = collections.defaultdict(list)
+
+  positive_src = [t[0] for t in positive_examples]
+  positive_tar = [t[1] for t in positive_examples]
+  
+  pos_src_word_indexes = [src_w2ind[i] for i in positive_src]
+  pos_tar_word_indexes = [tar_w2ind[i] for i in positive_tar]
+  
+  # src_word_ind -> tgt_word_ind:set 的dict
+  correct_mapping = collections.defaultdict(set)
+  for s, t in zip(pos_src_word_indexes, pos_tar_word_indexes):
+    correct_mapping[s].add(t)
+
+  # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
+  # nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+
+  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True)
+  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+  
+  # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
+  # 将mean(pos_tgt)在tgt语言空间内最近邻作为pos_src的负例
+
+  # 为每个pos_src word挑num_neg_per_pos个负例
+  neg_examples = []  
+  for src_ind in correct_mapping:
+    # 将src对应的多个tgt word的topk nearest neighbor word index构建集合
+    tgt_nn_wi = [_[0] for tgt_wi in correct_mapping[src_ind] for _ in tgt_nns[tgt_wi][:top_k]]
+    tgt_nn_wi = list(set(tgt_nn_wi))
+    # 去掉groundtruth
+    candidate_neg_wi = list(set(tgt_nn_wi) - correct_mapping[src_ind])
+    # 采样num_neg_per_pos个单词
+    hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
+    # 加入采样结果
+    for neg_wi in hard_neg_inds_sample: 
+      neg_examples.append((src_ind2w[src_ind], tar_ind2w[neg_wi]))
+      src_word2neg_words[src_ind].append((neg_wi, 0))
+
+  # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
+  # 取训练集中出现的pos_src的最近邻pos_src_nn1, pos_src_nn2, ...
+  # 将 pos_tgt1, pos_tgt2, ... 作为pos_src_nn1, pos_src_nn2, ...的hard负例
+
+  for src_ind in correct_mapping:
+    # 拿到src的topk nearest neighbor word index集合
+    src_nn_wi = [_[0] for _ in src_nns[src_ind] if _[0] in correct_mapping]
+    tgt_sets = correct_mapping[src_ind]
+    
+    # 去掉groundtruth
+    for src_nn_ind in src_nn_wi:
+      candidate_neg_wi = list(set(tgt_sets) - correct_mapping[src_nn_ind])
+      neg_examples.extend([(src_ind2w[src_nn_ind], tar_ind2w[neg_wi]) for neg_wi in candidate_neg_wi])
+      src_word2neg_words[src_nn_ind].extend([(neg_wi, 0) for neg_wi in candidate_neg_wi])
+
+  tgt_word2nns = collections.defaultdict(list)
+  for tgt_ind in tgt_nns:
+    for nei_id, nei_score in tgt_nns[tgt_ind]:
+      tgt_word2nns[tgt_ind].append((nei_id, nei_score))
+
+  return_list = neg_examples
+  shuffle(return_list) 
+  return return_list, src_word2neg_words, tgt_word2nns
  
+
+
 def calc_monolingual_adj(embedding, threshold=0, method='cos', knn=0):
   xp = get_array_module(embedding)
   if method == 'cos':
@@ -197,6 +265,28 @@ def calc_csls_translation(x, z, BATCH_SIZE=512, csls_k=10):
       for k in range(j-i):
           translation[src[i+k]] = nn[k]
   return translation
+
+def whitening_transformation_v1(embedding):
+  xp = get_array_module(embedding)
+  miu = xp.mean(embedding, 0)
+  _embedding = embedding - miu
+  zigma = xp.zeros(shape=(embedding.shape[1], embedding.shape[1]), dtype=embedding.dtype)
+  for i in range(embedding.shape[0]):
+    zigma += _embedding[i][:, None].dot(_embedding[i][None, :])
+  zigma = zigma / embedding.shape[0]
+  u, s, vt = xp.linalg.svd(zigma, full_matrices=True)
+  w = u.dot(xp.sqrt(xp.linalg.inv(xp.diag(s))))
+  new_embedding = _embedding.dot(w)
+  return new_embedding
+
+def whitening_transformation_v2(embedding):
+  xp = get_array_module(embedding)
+  u, s, vt = xp.linalg.svd(embedding, full_matrices=False)
+  w = vt.T.dot(xp.diag(1/s)).dot(vt)
+  new_embedding = embedding.dot(w)
+  return new_embedding
+
+
 
 def run_dssm_trainning(args):
   SL_start_time = time.time()
@@ -264,7 +354,7 @@ def run_dssm_trainning(args):
   # 返回的是负例word pair的list
   # generate negative examples for the current 
   print("Generating negative examples ...")
-  neg_examples, src_w2negs, src_w2nns =  generate_negative_examples_v2(pos_examples, 
+  neg_examples, src_w2negs, src_w2nns =  generate_negative_examples_v3(pos_examples, 
                                                                        src_word2ind, 
                                                                        trg_word2ind, 
                                                                        src_ind2word, 
@@ -313,15 +403,18 @@ def run_dssm_trainning(args):
 
   print("Training initial classifier ...")
 
-  embeddings.normalize(xw, ['unit', 'center', 'unit'])
-  embeddings.normalize(zw, ['unit', 'center', 'unit'])
-
   csls_translation = None
 
   #csls_translation = calc_csls_translation(xw, zw)
   #for _ in csls_translation:
   #  csls_translation[_] = asnumpy(csls_translation[_]).tolist()
+  embeddings.normalize(xw, ['unit', 'center', 'unit'])
+  embeddings.normalize(zw, ['unit', 'center', 'unit'])
 
+  if args.use_whitening:
+    print("use_whitening")
+    xw = whitening_transformation_v2(xw)
+    zw = whitening_transformation_v2(zw)
 
   if debug:
     # 保存最近邻 以及 建图结果 用于debug
@@ -429,7 +522,8 @@ if __name__ == "__main__":
   parser.add_argument('--in_tar', type=str, help='Name of the input target language embeddings file.', required = True)
   parser.add_argument('--out_src', type=str, help='Name of the output source languge embeddings file.', required = True)
   parser.add_argument('--out_tar', type=str, help='Name of the output target language embeddings file.', required = True)
-  
+  parser.add_argument('--use_origin_emb', action='store_true', help='use origin fasttext embeddings as model input')
+  parser.add_argument('--use_whitening', action='store_true', help='use whitening transformation as preprocess')
   
   # graph related para
   parser.add_argument('--graph_method', type=str, default='iden')
@@ -444,7 +538,6 @@ if __name__ == "__main__":
   parser.add_argument('--train_batch_size', type=int, default=256, help='train batch size')
   parser.add_argument('--train_epochs', type=int, default=70, help='train epochs')
   parser.add_argument('--lr', type=float, default=0.0001, help='learning rate')
-  parser.add_argument('--use_origin_emb', action='store_true', help='use origin fasttext embeddings as model input')
 
   
   parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)

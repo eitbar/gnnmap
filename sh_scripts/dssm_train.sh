@@ -1,17 +1,16 @@
-CUDA_VISIBLE_DEVICES=2 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5000.txt" \
+CUDA_VISIBLE_DEVICES=3 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5000.txt" \
                                             --val_dict "./data/en-zh/en-zh.5000-6500.txt" \
                                             --in_src "./data/en-zh/wiki.10k.en.vec" \
                                             --in_tar "./data/en-zh/wiki.10k.zh.vec" \
-                                            --src_lid "en" \
-                                            --tar_lid "zh" \
-                                            --out_src "./data/en-zh/nlgnn.wiki.10k.en-zh-aligned.EN.vec" \
-                                            --out_tar "./data/en-zh/nlgnn.wiki.10k.en-zh-aligned.ZH.vec" \
-                                            --model_filename "./data/en-zh/nlgnn.en-zh.ENHR-model.pickle" \
-                                            --idstring ENZHFASTTEXT \
+                                            --out_src "./data/en-zh/hh.orign.wiki.10k.en-zh-aligned.EN.vec" \
+                                            --out_tar "./data/en-zh/hh.orign.wiki.10k.en-zh-aligned.ZH.vec" \
+                                            --model_filename "./data/en-zh/hh.orign.en-zh.ENHR-model.pickle" \
                                             --graph_method "iden" \
                                             --h_dim 300 \
-                                            --lr 0.0005 \
+                                            --lr 0.001 \
                                             --hard_neg_sample 256 \
                                             --train_batch_size 256 \
-                                            --train_epochs 100 \
-                                            --model_name "hh"
+                                            --train_epochs 200 \
+                                            --model_name "hh" \
+                                            --use_origin_emb \
+                                            --use_whitening 
