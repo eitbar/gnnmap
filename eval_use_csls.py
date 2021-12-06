@@ -29,6 +29,7 @@ import gc
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
+from dssm_train import whitening_transformation_v4
 
 BATCH_SIZE = 250
 
@@ -103,6 +104,7 @@ def main():
     parser.add_argument('--encoding', default='utf-8', help='the character encoding for input/output (defaults to utf-8)')
     parser.add_argument('--seed', type=int, default=0, help='the random seed')
     parser.add_argument('--eval_result', type=str, default='eval_result.json')
+    parser.add_argument('--use_origin', action='store_true', help='use whitening')
 
     args = parser.parse_args()
     
@@ -136,8 +138,14 @@ def main():
         xp = np
     xp.random.seed(args.seed)
 
-    #embeddings.normalize(x, ['unit', 'center', 'unit'])
-    #embeddings.normalize(z, ['unit', 'center', 'unit'])
+    if args.use_origin:
+      embeddings.normalize(x, ['unit', 'center', 'unit'])
+      embeddings.normalize(z, ['unit', 'center', 'unit'])
+
+      #if args.use_whitening:
+      #  x = whitening_transformation_v4(x)
+      #  z = whitening_transformation_v4(z)
+
 
     x_adj = calc_monolingual_adj(x, method='iden')
     z_adj = calc_monolingual_adj(z, method='iden')

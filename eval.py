@@ -325,7 +325,7 @@ def main():
         'pred': pred_pair[:100]
       }
     import json
-    with open('debug_for_vecmap_csls_tmp.json', 'w', encoding='utf-8') as f:
+    with open('debug_for_vecmap_nn.json', 'w', encoding='utf-8') as f:
       json.dump(result, f, ensure_ascii=False, indent=2)
   
     

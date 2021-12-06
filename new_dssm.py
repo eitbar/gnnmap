@@ -1,3 +1,4 @@
+from numpy.core.numeric import False_
 from DenseGraphConv import DenseGraphConv
 import torch
 from torch import embedding, nn
@@ -12,11 +13,12 @@ import pickle
 #from transformers import WarmupLinearSchedule
 
 class DssmDatasets(Dataset):
-    def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_num=1000):
+    def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_num=1000, hard_random_flag=True):
       self.lens = len(pos_examples)
       self.vocab_size = vocab_size
       self.datas, self.src2gold = self._build_dataset(pos_examples, src_w2negs)
       self.random_neg_num = random_neg_num
+      self.hard_random_flag = hard_random_flag
       random.seed(2021)
 
     def _build_dataset(self, pos_examples, src_w2negs):
@@ -30,13 +32,19 @@ class DssmDatasets(Dataset):
     def __getitem__(self, i):
       # 在getitem的时候随机采样，是为了保证每个epoch采样得到的负例都不相同
       orig = self.datas[i]
-      hard_neg_set = set(orig[2:])
+      if self.hard_random_flag: 
+        #print(len(orig))
+        hard_neg_sample_list = random.sample(orig[2:], 256)
+        hard_neg_set = set(hard_neg_sample_list)
+      else:
+        hard_neg_sample_list = orig[2:]
+        hard_neg_set = set(hard_neg_sample_list)
+
       ground_true_set = self.src2gold[orig[0]]
       # 随机采样并与hard、gold去重
       rand_sampling = random.sample(list(range(self.vocab_size)), self.random_neg_num)
       no_dup_random_neg = list(set(rand_sampling) - hard_neg_set - ground_true_set)
-
-      new_item = orig + no_dup_random_neg
+      new_item = orig[:2] + hard_neg_sample_list + no_dup_random_neg
       return new_item
 
     def __len__(self):
@@ -131,10 +139,16 @@ MODELDICT = {
 
 class GDSSM(nn.Module):
     
-    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, model_name="gnn"):
+    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, model_name="gnn", is_single_tower=False):
         super(GDSSM, self).__init__()
         self.src_tower = MODELDICT[model_name](src_in_feat_dim, h_feat_dim)
-        self.tgt_tower = MODELDICT[model_name](tgt_in_feat_dim, h_feat_dim)
+        if is_single_tower == True:
+          self.tgt_tower = self._straight_forwoard
+        else:
+          self.tgt_tower = MODELDICT[model_name](src_in_feat_dim, h_feat_dim)
+
+    def _straight_forwoard(self, x, a):
+        return x
 
     def forward(self, node_feat_src, adj_src, node_feat_tgt, adj_tgt, src_index, tgts_index):
         src_h = self.src_tower(node_feat_src, adj_src)
@@ -154,7 +168,7 @@ class GDSSM(nn.Module):
 class DssmTrainer:
     def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, 
                   device='gpu', epochs=100, lr=0.0001, train_batch_size=256, random_neg_sample=512, 
-                  model_name="gnn", model_save_file='tmp_model.pickle'):
+                  model_name="gnn", model_save_file='tmp_model.pickle', is_single_tower=False):
         # train config
         self.epochs = epochs
         self.train_batch_size = train_batch_size
@@ -162,7 +176,7 @@ class DssmTrainer:
         self.model_save_file = model_save_file
         self.device = torch.device("cuda" if torch.cuda.is_available() and device == 'gpu' else "cpu")
         # model config
-        self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, model_name)
+        self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, model_name, is_single_tower)
         self.loss_func = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         #self.scheduler = WarmupLinearSchedule(
@@ -200,9 +214,10 @@ class DssmTrainer:
         model.to(self.device)
 
         src_x = src_x.to(self.device)
-        src_a = src_a.to(self.device)
         tgt_x = tgt_x.to(self.device)
-        tgt_a = tgt_a.to(self.device)
+        if tgt_a != None and src_a != None:
+          src_a = src_a.to(self.device)
+          tgt_a = tgt_a.to(self.device)
 
         train_dataset = DssmDatasets(train_set, src_w2negs, 
                                       vocab_size=tgt_x.shape[0], 
@@ -247,7 +262,7 @@ class DssmTrainer:
                   e, step, loss, optimizer.state_dict()['param_groups'][0]['lr']))
 
             # evaluate test set
-            if e % 5 == 0 or e == self.epochs - 1:
+            if e % 1 == 0 or e == self.epochs - 1:
               model.eval()
               #val_src = train_src
               #val_src2tgts = train_src2tgts
@@ -255,12 +270,11 @@ class DssmTrainer:
               acc, scores_result, tgts_result = self.eval(src_x, src_a, tgt_x, tgt_a, eval_src, eval_src2tgts)
               
               if best_val_acc < acc:
-                if acc[0] - save_best_acc[0] > 0.01:
+                if acc[0] - save_best_acc[0] > 0.001:
                   self.save()
                   save_best_acc = acc
                 best_val_acc = acc
                 best_epoch = e
-                print(f"best result at epoch {best_epoch}: {best_val_acc}")
                 # for debug
                 if verbose:
                   src2pred_result_top100 = {}
@@ -274,7 +288,8 @@ class DssmTrainer:
                       }
                   with open('tmp.json', 'w', encoding='utf-8') as f:
                     json.dump(src2pred_result_top100, f, ensure_ascii=False, indent=2)
-
+              print(f"best result at epoch {best_epoch}: {best_val_acc}")
+              
     def eval(self, src_x, src_a, tgt_x, tgt_a, val_src, val_src2tgts):
 
       tgts_result = []
@@ -308,9 +323,10 @@ class DssmTrainer:
         model.to(self.device)
 
         src_x = src_x.to(self.device)
-        src_a = src_a.to(self.device)
         tgt_x = tgt_x.to(self.device)
-        tgt_a = tgt_a.to(self.device)
+        if tgt_a != None and src_a != None:
+          src_a = src_a.to(self.device)
+          tgt_a = tgt_a.to(self.device)
 
         if src2tgts_list is None:
           test_tgts = [list(range(tgt_x.shape[0]))] * len(test_src)

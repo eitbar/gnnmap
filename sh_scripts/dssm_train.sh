@@ -2,15 +2,15 @@ CUDA_VISIBLE_DEVICES=0 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5
                                             --val_dict "./data/en-zh/en-zh.5000-6500.txt" \
                                             --in_src "./data/en-zh/wiki.10k.en.vec" \
                                             --in_tar "./data/en-zh/wiki.10k.zh.vec" \
-                                            --out_src "./data/en-zh/hh.orign.wiki.10k.en-zh-aligned.EN.vec" \
-                                            --out_tar "./data/en-zh/hh.orign.wiki.10k.en-zh-aligned.ZH.vec" \
-                                            --model_filename "./data/en-zh/hh.orign.en-zh.ENHR-model.pickle" \
+                                            --out_src "./data/en-zh/hh.en-zh-aligned.EN.n3w4r.10k.0.0005.vec" \
+                                            --out_tar "./data/en-zh/hh.en-zh-aligned.ZH.n3w4r.10k.0.0005.vec" \
+                                            --model_filename "./data/en-zh/hh.ENZH-model.n3w4r.10k.0.0005.pickle" \
                                             --graph_method "iden" \
                                             --h_dim 300 \
-                                            --lr 0.001 \
+                                            --lr 0.0005 \
                                             --hard_neg_sample 256 \
                                             --train_batch_size 256 \
-                                            --train_epochs 200 \
+                                            --train_epochs 1000 \
                                             --model_name "hh" \
                                             --use_origin_emb \
-                                            --use_whitening 
+                                            --use_whitening

@@ -36,9 +36,11 @@ def debug_neg_sampling_record(src_w2negs, src_ind2word, trg_ind2word, src_w2nns,
         'hard_neg_sample_words': ','.join(neg_trg_word_list[:100])
       })
     
-    with open('orig_neg_select_v2.json', 'w') as f:
+    with open('orig_neg_select_v4.json', 'w') as f:
       json.dump(neg_result, f, indent=2, ensure_ascii=False)
 
+    exit(0)
+    """
     nns_result = []
     for src in src_w2nns:
       src_word = src_ind2word[src]
@@ -53,6 +55,7 @@ def debug_neg_sampling_record(src_w2negs, src_ind2word, trg_ind2word, src_w2nns,
     
     with open('orig_nns_select.json', 'w') as f:
       json.dump(nns_result, f, indent=2, ensure_ascii=False)
+    """
 
 def debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word):
     x_cos_sim = xw.dot(xw.T)
@@ -149,6 +152,7 @@ def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = Tr
   print("Time taken " + str(time.time() - start_time))
   return(ret)   
 
+
 def generate_negative_examples_v1(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos): 
   l = len(positive_examples)
   src_word2neg_words = collections.defaultdict(list)
@@ -173,16 +177,24 @@ def generate_negative_examples_v1(positive_examples, src_w2ind, tar_w2ind, src_i
   # 为每个pos_src word挑num_neg_per_pos个负例，好像没判重？
   neg_examples = [] 
   for src_ind in nns:
-    for i in range(num_neg_per_pos):
-      sampling_success = False
-      while not sampling_success:
-        tmp_ind = randrange(top_k)
-        rand_neighbour_ind = nns[src_ind][tmp_ind][0]
-        rand_score = nns[src_ind][tmp_ind][1]
-        if rand_neighbour_ind not in correct_mapping[src_ind] and (rand_neighbour_ind, rand_score) not in src_word2neg_words[src_ind]:
-          sampling_success = True
-          neg_examples.append((src_ind2w[src_ind], tar_ind2w[rand_neighbour_ind]))
-          src_word2neg_words[src_ind].append((rand_neighbour_ind, rand_score))
+    # 将src对应的多个tgt word的topk nearest neighbor word index构建集合
+    tgt_nn_wi = nns[src_ind][:top_k]
+    # 去掉groundtruth与重复单词
+    candidate_neg_wi2s = dict()
+    for wi, s in tgt_nn_wi:
+      if wi not in candidate_neg_wi2s and wi not in correct_mapping[src_ind]:
+        candidate_neg_wi2s[wi] = s
+    
+    candidate_neg_wi = sorted(list(candidate_neg_wi2s.items()), key=lambda x:x[1], reverse=True)
+    # 采样num_neg_per_pos个单词
+    if num_neg_per_pos != None:
+      hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
+    else:
+      hard_neg_inds_sample = candidate_neg_wi
+    # 加入采样结果
+    for neg_wi, neg_s in hard_neg_inds_sample: 
+      neg_examples.append((src_ind2w[src_ind], tar_ind2w[neg_wi]))
+      src_word2neg_words[src_ind].append((neg_wi, neg_s))
 
   src_word2nns = collections.defaultdict(list)
   for src_ind in nns:
@@ -229,7 +241,10 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
 
     candidate_neg_wi = sorted(list(candidate_neg_wi2s.items()), key=lambda x:x[1], reverse=True)
     # 采样num_neg_per_pos个单词
-    hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
+    if num_neg_per_pos != None:
+      hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
+    else:
+      hard_neg_inds_sample = candidate_neg_wi
     # 加入采样结果
     for neg_wi, neg_s in hard_neg_inds_sample: 
       neg_examples.append((src_ind2w[src_ind], tar_ind2w[neg_wi]))
@@ -283,7 +298,10 @@ def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_i
 
     candidate_neg_wi = sorted(list(candidate_neg_wi2s.items()), key=lambda x:x[1], reverse=True)
     # 采样num_neg_per_pos个单词
-    hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
+    if num_neg_per_pos != None:
+      hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
+    else:
+      hard_neg_inds_sample = candidate_neg_wi
     # 加入采样结果
     for neg_wi, neg_s in hard_neg_inds_sample: 
       neg_examples.append((src_ind2w[src_ind], tar_ind2w[neg_wi]))
@@ -312,7 +330,60 @@ def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_i
   return_list = neg_examples
   shuffle(return_list) 
   return return_list, src_word2neg_words, tgt_word2nns
- 
+
+def generate_negative_examples_v4(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos):
+  xp = get_array_module(x)
+  sim_size = min(x.shape[0], z.shape[0])
+  u, s, vt = xp.linalg.svd(x[:sim_size], full_matrices=False)
+  xsim = (u*s).dot(u.T)
+  u, s, vt = xp.linalg.svd(z[:sim_size], full_matrices=False)
+  zsim = (u*s).dot(u.T)
+  del u, s, vt
+  xsim.sort(axis=1)
+  zsim.sort(axis=1)
+  normalize_method = ['unit', 'center', 'unit']
+  embeddings.normalize(xsim, normalize_method)
+  embeddings.normalize(zsim, normalize_method)
+  _, src_word2neg_words_sim_distri, _ = generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, xsim, zsim, 300, 128)
+  _, src_word2neg_words_neg, _ = generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos)
+  agg_src_word2_neg_words = {}
+  for _src in src_word2neg_words_sim_distri:
+    src_word2neg_words_sim_distri[_src] = [(_[0], 0) for _ in src_word2neg_words_sim_distri[_src]]
+    src_word2neg_words_neg[_src] = [(_[0], 0) for _ in src_word2neg_words_neg[_src]]
+    neg_set = list(set(src_word2neg_words_sim_distri[_src] + src_word2neg_words_neg[_src]))
+    agg_src_word2_neg_words[_src] = neg_set
+  return _, agg_src_word2_neg_words, _
+
+def generate_negative_examples_v5(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos):
+  xp = get_array_module(x)
+  sim_size = min(x.shape[0], z.shape[0])
+  u, s, vt = xp.linalg.svd(x[:sim_size], full_matrices=False)
+  xsim = (u*s).dot(u.T)
+  u, s, vt = xp.linalg.svd(z[:sim_size], full_matrices=False)
+  zsim = (u*s).dot(u.T)
+  del u, s, vt
+  xsim.sort(axis=1)
+  zsim.sort(axis=1)
+  normalize_method = ['unit', 'center', 'unit']
+  embeddings.normalize(xsim, normalize_method)
+  embeddings.normalize(zsim, normalize_method)
+  num_neg_per_pos = None
+  _, src_word2neg_words_sim_distri, _ = generate_negative_examples_v1(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, xsim, zsim, top_k, num_neg_per_pos)
+  del xsim, zsim
+  _, src_word2neg_words_neg, _ = generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos)
+  
+  agg_src_word2_neg_words = {}
+  mean_len_list = []
+  for _src in src_word2neg_words_sim_distri:
+    src_word2neg_words_sim_distri[_src] = [(_[0], 0) for _ in src_word2neg_words_sim_distri[_src]]
+    src_word2neg_words_neg[_src] = [(_[0], 0) for _ in src_word2neg_words_neg[_src]]
+    neg_set = list(set(src_word2neg_words_sim_distri[_src] + src_word2neg_words_neg[_src]))
+    agg_src_word2_neg_words[_src] = neg_set
+    mean_len_list.append(len(neg_set))
+  print(sum(mean_len_list) / len(mean_len_list))
+  return _, agg_src_word2_neg_words, _
+
+
 def calc_monolingual_adj(embedding, threshold=0, method='cos', knn=0):
   xp = get_array_module(embedding)
   if method == 'cos':
@@ -376,7 +447,42 @@ def whitening_transformation_v2(embedding):
   new_embedding = embedding.dot(w)
   return new_embedding
 
+def whitening_transformation_v3(embedding):
+  xp = get_array_module(embedding)
+  def compute_kernel_bias(vecs):
+    mu = vecs.mean(axis=0, keepdims=True)
+    cov = xp.cov(vecs.T)
+    u, s, vh = xp.linalg.svd(cov)
+    W = xp.dot(u, xp.diag(1 / xp.sqrt(s)))
+    return W, -mu
 
+  def transform_and_normalize(vecs, kernel, bias):
+    vecs = (vecs + bias).dot(kernel)
+    norms = (vecs**2).sum(axis=1, keepdims=True)**0.5
+    return vecs / xp.clip(norms, 1e-8, xp.inf)
+
+  kernel, bias = compute_kernel_bias(embedding)
+  new_embedding = transform_and_normalize(embedding, kernel, bias)
+  new_embedding = new_embedding.astype(embedding.dtype)
+  return new_embedding
+
+def whitening_transformation_v4(embedding, seed_index=None):
+  if seed_index == None:
+    return whitening_transformation_v2(embedding)
+  xp = get_array_module(embedding)
+  seed_embeddings = embedding[seed_index]
+  u, s, vt = xp.linalg.svd(seed_embeddings, full_matrices=False)
+  w = vt.T.dot(xp.diag(1/s)).dot(vt)
+  new_embedding = embedding.dot(w)
+  return new_embedding  
+
+def training_noise_reduction(positive_examples):
+  new_positive_examples = []
+  for s, t in positive_examples:
+    if len(set(t) & set("abcdefghijklmnopqrstuvwxytz")) > 0:
+      continue
+    new_positive_examples.append((s,t))
+  return new_positive_examples
 
 def run_dssm_trainning(args):
   SL_start_time = time.time()
@@ -394,8 +500,8 @@ def run_dssm_trainning(args):
   dtype = "float32"
   srcfile = open(args.in_src, encoding="utf-8", errors='surrogateescape')
   trgfile = open(args.in_tar, encoding="utf-8", errors='surrogateescape')
-  src_words, x = embeddings.read(srcfile, 10000, dtype=dtype)
-  trg_words, z = embeddings.read(trgfile, 10000, dtype=dtype)
+  src_words, x = embeddings.read(srcfile, 30000, dtype=dtype)
+  trg_words, z = embeddings.read(trgfile, 30000, dtype=dtype)
 
   # load the supervised dictionary
   src_word2ind = {word: i for i, word in enumerate(src_words)}
@@ -449,8 +555,9 @@ def run_dssm_trainning(args):
   # 生成负例,hard neg examples
   # 返回的是负例word pair的list
   # generate negative examples for the current 
+  neg_per_pos = None
   print("Generating negative examples ...")
-  neg_examples, src_w2negs, src_w2nns =  generate_negative_examples_v1(pos_examples, 
+  neg_examples, src_w2negs, src_w2nns =  generate_negative_examples_v3(pos_examples, 
                                                                        src_word2ind, 
                                                                        trg_word2ind, 
                                                                        src_ind2word, 
@@ -459,6 +566,12 @@ def run_dssm_trainning(args):
                                                                        copy.deepcopy(zw), 
                                                                        top_k = neg_top_k, 
                                                                        num_neg_per_pos = neg_per_pos)
+
+  if args.use_whitening:
+    print("use_whitening")
+    xw = whitening_transformation_v4(xw, sorted(list(set(src_indices))))
+    zw = whitening_transformation_v4(zw, sorted(list(set(trg_indices))))
+
   if debug:
     # 保存hard neg sample结果用于debug
     debug_neg_sampling_record(src_w2negs, src_ind2word, trg_ind2word, src_w2nns, train_set)
@@ -469,25 +582,25 @@ def run_dssm_trainning(args):
 
   print("Training initial classifier ...")
 
-  if args.use_whitening:
-    print("use_whitening")
-    xw = whitening_transformation_v2(xw)
-    zw = whitening_transformation_v2(zw)
-
   if debug:
     # 保存最近邻用于debug
-    debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word)
+    #debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word)
     # 保存建图结果用于debug
-    debug_graph_structual(xw, zw, src_ind2word, trg_ind2word, src_indices, trg_indices)
-  
-  x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
-  z_adj = calc_monolingual_adj(zw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
+    # debug_graph_structual(xw, zw, src_ind2word, trg_ind2word, src_indices, trg_indices)
+    pass
 
   with torch.no_grad():
     torch_xw = torch.from_numpy(asnumpy(xw))
     torch_zw = torch.from_numpy(asnumpy(zw))
+
+  if args.graph_method != 'iden':
+    x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
+    z_adj = calc_monolingual_adj(zw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
     torch_x_adj = torch.from_numpy(asnumpy(x_adj))
     torch_z_adj = torch.from_numpy(asnumpy(z_adj))
+  else:
+    torch_x_adj = None
+    torch_z_adj = None
 
   model = DssmTrainer(torch_xw.shape[1], 
                         torch_zw.shape[1], 
@@ -497,7 +610,8 @@ def run_dssm_trainning(args):
                         lr=args.lr,
                         train_batch_size=args.train_batch_size,
                         model_name=args.model_name,
-                        model_save_file=args.model_filename)
+                        model_save_file=args.model_filename,
+                        is_single_tower=args.is_single_tower)
 
   model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set, src_i2w=src_ind2word, tgt_i2w=trg_ind2word, verbose=True)
 
@@ -512,6 +626,7 @@ def run_dssm_trainning(args):
   srcfile.close()
   trgfile.close()
   print("SL FINISHED " + str(time.time() - SL_start_time))
+
   
 
 if __name__ == "__main__":  
@@ -527,6 +642,8 @@ if __name__ == "__main__":
   parser.add_argument('--use_origin_emb', action='store_true', help='use origin fasttext embeddings as model input')
   parser.add_argument('--use_whitening', action='store_true', help='use whitening transformation as preprocess')
   
+  
+
   # graph related para
   parser.add_argument('--graph_method', type=str, default='iden')
   parser.add_argument('--graph_knn', type=int, default=3)
@@ -534,6 +651,7 @@ if __name__ == "__main__":
 
   # model related para
   parser.add_argument('--model_name', type=str, choices=["gnn", "linear", "hh", "nl_gnn"], default="gnn", help='select model method')
+  parser.add_argument('--is_single_tower', action='store_true', help='use single tower')
   parser.add_argument('--h_dim', type=int, default=300, help='hidden states dim in GNN')
   parser.add_argument('--hard_neg_sample', type=int, default=256, help='number of hard negative examples')
   parser.add_argument('--random_neg_sample', type=int, default=256, help='number of random negative examples')

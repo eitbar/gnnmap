@@ -1,6 +1,8 @@
-CUDA_VISIBLE_DEVICES=3 python3 eval_use_csls.py "./data/en-zh/linear.wiki.10k.en-zh-aligned.EN.vec" "./data/en-zh/linear.wiki.10k.en-zh-aligned.ZH.vec" \
-                                        -d ./data/en-zh/en-zh.5000-6500.txt \
+CUDA_VISIBLE_DEVICES=1 python3 eval_use_csls.py "./data/en-de/wiki.30k.en.vec" \
+                                                "./data/en-de/wiki.30k.de.vec" \
+                                        -d ./data/en-de/en-de.5000-6500.txt \
                                         --retrieval nn \
                                         --cuda \
-                                        --model ./data/en-zh/linear.en-zh.ENHR-model.pickle \
-                                        --eval_result eval_result_nn_for_iden_graph.json
+                                        --model ./data/en-de/hh.ENDE-model.n5abcw4r.pickle \
+                                        --eval_result eval_result_nn_for_iden_graph.json \
+                                        --use_origin 

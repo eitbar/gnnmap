@@ -105,7 +105,7 @@ def run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indice
     init_type = init_group.add_mutually_exclusive_group()
     init_type.add_argument('-d', '--init_dictionary', default=sys.stdin.fileno(), metavar='DICTIONARY', help='the training dictionary file (defaults to stdin)')
     init_type.add_argument('--init_identical', action='store_true', help='use identical words as the seed dictionary')
-    init_type.add_argument('--init_numerals', action='store_true', help='use latin numerals (i.e. words matching [0-9]+) as the seed dictionary')
+    init_type.add_argument('--init+_numerals', action='store_true', help='use latin numerals (i.e. words matching [0-9]+) as the seed dictionary')
     init_type.add_argument('--init_unsupervised', action='store_true', help='use unsupervised initialization')
     init_group.add_argument('--unsupervised_vocab', type=int, default=0, help='restrict the vocabulary to the top k entries for unsupervised initialization')
 
@@ -362,7 +362,7 @@ def run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indice
             zw[:] = z
 
             # STEP 1: Whitening
-
+            
             def whitening_transformation(m):
                 u, s, vt = xp.linalg.svd(m, full_matrices=False)
                 return vt.T.dot(xp.diag(1/s)).dot(vt)
@@ -371,13 +371,13 @@ def run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indice
                 wz1 = whitening_transformation(zw[trg_indices])
                 xw = xw.dot(wx1)
                 zw = zw.dot(wz1)
+            
 
             # STEP 2: Orthogonal mapping
 
-  
             #x_adj = calc_monolingual_adj(x, method='iden')
             #z_adj = calc_monolingual_adj(z, method='iden')
-            
+            """
             if not flag and x_adj is not None and z_adj is not None:
                 tmp_x = x_adj.dot(xw)
                 tmp_z = z_adj.dot(zw)
@@ -387,9 +387,10 @@ def run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indice
                 tmp_x = x_adj.dot(xw)
                 tmp_z = z_adj.dot(zw)                
             else:
-                tmp_x = xw
-                tmp_z = zw
-
+            """
+            tmp_x = xw
+            tmp_z = zw
+ 
             wx2, s, wz2_t = xp.linalg.svd(tmp_x[src_indices].T.dot(tmp_z[trg_indices]))
             wz2 = wz2_t.T
             xw = xw.dot(wx2)
