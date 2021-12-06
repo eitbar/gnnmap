@@ -50,40 +50,10 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
         m[ind0, ind1] = minimum
     return ans / k
 
-def calc_monolingual_adj(embedding, threshold=0, method='cos'):
-  if method == 'cos':
-    adj = embedding.dot(embedding.T)
-  elif method == 'csls':
-    adj = calc_csls_sim(embedding, embedding, 10, True)
-  else:
-    adj = None
-
-  _mask = adj > threshold
-  print(_mask.sum())
-  adj = adj * _mask
-
-  return adj
-
 def load_model(model_file_path):
-  with(open(model_file_path, "rb")) as infile:
-    model = pickle.load(infile)   
-  return model
-
- 
-def calc_monolingual_adj(embedding, threshold=0, method='cos'):
-  if method == 'cos':
-    adj = embedding.dot(embedding.T)
-  elif method == 'csls':
-    adj = calc_csls_sim(embedding, embedding, 10, True)
-  else:
-    adj = np.identity(embedding.shape[0])
-    return adj
-
-  _mask = adj > threshold
-  print(_mask.sum())
-  adj = adj * _mask
-
-  return adj
+    with(open(model_file_path, "rb")) as infile:
+        model = pickle.load(infile)   
+    return model
 
 def main():
     # Parse command line arguments
@@ -142,19 +112,9 @@ def main():
       embeddings.normalize(x, ['unit', 'center', 'unit'])
       embeddings.normalize(z, ['unit', 'center', 'unit'])
 
-      #if args.use_whitening:
-      #  x = whitening_transformation_v4(x)
-      #  z = whitening_transformation_v4(z)
-
-
-    x_adj = calc_monolingual_adj(x, method='iden')
-    z_adj = calc_monolingual_adj(z, method='iden')
-
     with torch.no_grad():
         torch_xw = torch.from_numpy(asnumpy(x))
         torch_zw = torch.from_numpy(asnumpy(z))
-        torch_x_adj = torch.from_numpy(asnumpy(x_adj))
-        torch_z_adj = torch.from_numpy(asnumpy(z_adj))
 
     model = load_model(args.model)
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
@@ -162,13 +122,10 @@ def main():
     model.model.eval()
     torch_xw = torch_xw.to(device)
     torch_zw = torch_zw.to(device)
-    torch_x_adj = torch_x_adj.to(device)
-    torch_z_adj = torch_z_adj.to(device)
-
 
     with torch.no_grad():
-        x_h = model.model.src_tower(torch_xw, torch_x_adj)
-        z_h = model.model.tgt_tower(torch_zw, torch_z_adj)
+        x_h = model.model.src_tower(torch_xw)
+        z_h = model.model.tgt_tower(torch_zw)
         x_h_norm = F.normalize(x_h)
         z_h_norm = F.normalize(z_h)
     new_x = x_h_norm.cpu().numpy()
@@ -176,8 +133,6 @@ def main():
 
     x = new_x
     z = new_z
-
-
 
     # Read dictionary and compute coverage
     f = open(args.dictionary, encoding=args.encoding, errors='surrogateescape')
@@ -196,8 +151,6 @@ def main():
     src = list(src2trg.keys())
     oov -= vocab  # If one of the translation options is in the vocabulary, then the entry is not an oov
     coverage = len(src2trg) / (len(src2trg) + len(oov))
-
-
 
     xp = numpy
     # Find translations
@@ -259,10 +212,6 @@ def main():
                 translation[src[i+k]] = nn[k]
                 scores[src[i+k]] = tmp_sim[k]
     
-    #print(translation[src[0]])
-    #print(np.where(translation[src[0]] == 15))
-    #print(np.where(translation[src[0]] == 15)[0][0])
-    
     result = {}
     src = sorted(src)
     for i in src:
@@ -277,10 +226,6 @@ def main():
     with open(args.eval_result, 'w', encoding='utf-8') as f:
       json.dump(result, f, ensure_ascii=False, indent=2)
        
-    
-    # apply supervised if needed
-
-    #positions_old = [np.min([np.where(asnumpy(translation[i]) == x)[0][0]+1 for x in src2trg[i]]) for i in src] 
 
     positions = [np.min([np.where(asnumpy(translation[i]) == x)[0][0]+1 for x in src2trg[i]]) for i in src] 
 
@@ -298,9 +243,6 @@ def main():
 
     print('Coverage:{0:7.2%}'.format(coverage))
 
-    #print("RAW_OUTPUTS")
-    #for p in positions:
-      #print(p)
       
  
 if __name__ == '__main__':

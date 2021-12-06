@@ -39,24 +39,6 @@ def debug_neg_sampling_record(src_w2negs, src_ind2word, trg_ind2word, src_w2nns,
     with open('orig_neg_select_v4.json', 'w') as f:
       json.dump(neg_result, f, indent=2, ensure_ascii=False)
 
-    exit(0)
-    """
-    nns_result = []
-    for src in src_w2nns:
-      src_word = src_ind2word[src]
-      nns_trg_word_list = src_w2nns[src]
-      nns_trg_word_list = sorted(nns_trg_word_list, key=lambda x:x[1], reverse=True)
-
-      nns_trg_word_list = [trg_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in nns_trg_word_list]
-      nns_result.append({
-        'src_word': src_word,
-        'nns_words': ','.join(nns_trg_word_list[:100])
-      })
-    
-    with open('orig_nns_select.json', 'w') as f:
-      json.dump(nns_result, f, indent=2, ensure_ascii=False)
-    """
-
 def debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word):
     x_cos_sim = xw.dot(xw.T)
     x_nn = (-x_cos_sim).argsort(axis=1)
@@ -86,30 +68,6 @@ def debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word):
       json.dump(src_word2nn, f, indent=2, ensure_ascii=False) 
     with open('tgt_word2nn.json', 'w') as f:
       json.dump(tgt_word2nn, f, indent=2, ensure_ascii=False)
-
-def debug_graph_structual(xw, zw, src_ind2word, trg_ind2word, src_indices, trg_indices):
-    x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
-    z_adj = calc_monolingual_adj(zw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
-
-    train_src_2_edge = {}
-    for src_ind in set(src_indices):
-        src_adj_index = np.where(x_adj[src_ind] > 0)[0]
-        adj_score = x_adj[src_ind][src_adj_index].tolist()
-        adj_index = src_adj_index.tolist()
-        word_score_pair = list(zip([src_ind2word[_] for _ in adj_index], adj_score))
-        train_src_2_edge[src_ind2word[src_ind]] = ', '.join([w + '(' + "%.5f" % s + ')' for w, s in word_score_pair])
-    with open('src_word2neiborword.json', 'w') as f:
-      json.dump(train_src_2_edge, f, indent=2, ensure_ascii=False)
-
-    train_tgt_2_edge = {}
-    for trg_ind in set(trg_indices):
-        trg_adj_index = np.where(z_adj[trg_ind] > 0)[0]
-        adj_score = z_adj[trg_ind][trg_adj_index].tolist()
-        adj_index = trg_adj_index.tolist()
-        word_score_pair = list(zip([trg_ind2word[_] for _ in adj_index], adj_score))
-        train_tgt_2_edge[trg_ind2word[trg_ind]] = ', '.join([w + '(' + "%.5f" % s + ')' for w, s in word_score_pair])
-    with open('tgt_word2neiborword.json', 'w') as f:
-      json.dump(train_tgt_2_edge, f, indent=2, ensure_ascii=False)
 
 def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = True):
   # get Z to the GPU once in the beginning (it can be big, seems like a waste to copy it again for every batch)
@@ -151,7 +109,6 @@ def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = Tr
         ret[src[i+k]] = ind
   print("Time taken " + str(time.time() - start_time))
   return(ret)   
-
 
 def generate_negative_examples_v1(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos): 
   l = len(positive_examples)
@@ -383,50 +340,6 @@ def generate_negative_examples_v5(positive_examples, src_w2ind, tar_w2ind, src_i
   print(sum(mean_len_list) / len(mean_len_list))
   return _, agg_src_word2_neg_words, _
 
-
-def calc_monolingual_adj(embedding, threshold=0, method='cos', knn=0):
-  xp = get_array_module(embedding)
-  if method == 'cos':
-    adj = embedding.dot(embedding.T)
-  elif method == 'csls':
-    adj = calc_csls_sim(embedding, embedding, 10, True)
-  else:
-    adj = xp.identity(embedding.shape[0])
-    return adj
-
-  _mask = adj > threshold
-  adj = adj * _mask
-  print(_mask.sum())
-  if knn > 0:
-    sorted_sim_tmp = xp.sort(adj)
-    # max_neighbor_number+1 for ignore self
-    kth_sim_value_tmp = sorted_sim_tmp[:, -(knn+1)]
-    assert kth_sim_value_tmp.shape[0] == adj.shape[0]
-
-    for i in range(adj.shape[0]):
-        neighbor_mask = adj[i] >= kth_sim_value_tmp[i]
-        adj[i] = adj[i] * neighbor_mask
-
-  print((adj > 0).sum())
-
-  return adj
-
-def calc_csls_translation(x, z, BATCH_SIZE=512, csls_k=10):
-  xp = get_array_module(x)
-  src = list(range(x.shape[0]))
-  translation = collections.defaultdict(int)
-  knn_sim_bwd = xp.zeros(z.shape[0])
-  for i in range(0, z.shape[0], BATCH_SIZE):
-      j = min(i + BATCH_SIZE, z.shape[0])
-      knn_sim_bwd[i:j] = topk_mean(z[i:j].dot(x.T), k=csls_k, inplace=True)
-  for i in range(0, len(src), BATCH_SIZE):
-      j = min(i + BATCH_SIZE, len(src))
-      similarities = 2*x[src[i:j]].dot(z.T) - knn_sim_bwd  # Equivalent to the real CSLS scores for NN
-      nn = (-similarities).argsort(axis=1)
-      for k in range(j-i):
-          translation[src[i+k]] = nn[k]
-  return translation
-
 def whitening_transformation_v1(embedding):
   xp = get_array_module(embedding)
   miu = xp.mean(embedding, 0)
@@ -487,7 +400,6 @@ def training_noise_reduction(positive_examples):
 def run_dssm_trainning(args):
   SL_start_time = time.time()
 
-
   # 对于每个src，从tgt单词的cos相似度最高的neg_top_k个单词中随机采样neg_per_pos个
   neg_top_k = 500
   neg_per_pos = args.hard_neg_sample
@@ -547,7 +459,6 @@ def run_dssm_trainning(args):
   else:
     print("Starting the Artetxe et al. alignment ...") 
     xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)
-
  
   embeddings.normalize(xw, ['unit', 'center', 'unit'])
   embeddings.normalize(zw, ['unit', 'center', 'unit'])
@@ -585,22 +496,11 @@ def run_dssm_trainning(args):
   if debug:
     # 保存最近邻用于debug
     #debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word)
-    # 保存建图结果用于debug
-    # debug_graph_structual(xw, zw, src_ind2word, trg_ind2word, src_indices, trg_indices)
     pass
 
   with torch.no_grad():
     torch_xw = torch.from_numpy(asnumpy(xw))
     torch_zw = torch.from_numpy(asnumpy(zw))
-
-  if args.graph_method != 'iden':
-    x_adj = calc_monolingual_adj(xw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
-    z_adj = calc_monolingual_adj(zw, threshold=args.graph_threshold, method=args.graph_method, knn=args.graph_knn)
-    torch_x_adj = torch.from_numpy(asnumpy(x_adj))
-    torch_z_adj = torch.from_numpy(asnumpy(z_adj))
-  else:
-    torch_x_adj = None
-    torch_z_adj = None
 
   model = DssmTrainer(torch_xw.shape[1], 
                         torch_zw.shape[1], 
@@ -609,16 +509,14 @@ def run_dssm_trainning(args):
                         epochs=args.train_epochs, 
                         lr=args.lr,
                         train_batch_size=args.train_batch_size,
-                        model_name=args.model_name,
                         model_save_file=args.model_filename,
                         is_single_tower=args.is_single_tower)
-
-  model.fit(torch_xw, torch_x_adj, torch_zw, torch_z_adj, train_set, src_w2negs, val_set, src_i2w=src_ind2word, tgt_i2w=trg_ind2word, verbose=True)
+                        
+  model.fit(torch_xw, torch_zw, train_set, src_w2negs, val_set)
 
   print("Writing output to files ...")
   # write res to disk
   # 保存xw, zw
-
   srcfile = open(args.out_src, mode='w', encoding="utf-8", errors='surrogateescape')
   trgfile = open(args.out_tar, mode='w', encoding="utf-8", errors='surrogateescape')
   embeddings.write(src_words, xw, srcfile)
@@ -626,7 +524,6 @@ def run_dssm_trainning(args):
   srcfile.close()
   trgfile.close()
   print("SL FINISHED " + str(time.time() - SL_start_time))
-
   
 
 if __name__ == "__main__":  

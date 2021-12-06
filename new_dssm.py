@@ -67,49 +67,6 @@ class DssmDatasets(Dataset):
       labels_list = torch.tensor(labels_list, dtype=torch.long)
       return src_index, tgts_list_index, labels_list
 
-class BaseTower(nn.Module):
-    # (AXW)W
-    def __init__(self, in_feat_dim, h_feat_dim, dropout=0.2):
-        super(BaseTower, self).__init__()
-        self.conv = DenseGraphConv(in_feat_dim, h_feat_dim)
-        self.proj = nn.Linear(h_feat_dim, h_feat_dim)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, node_feat, adj):
-        h = self.conv(adj, node_feat)
-        p_h = self.proj(h)
-        return p_h
-
-class GraphTower(nn.Module):
-    # relu(AXW+B)
-    def __init__(self, in_feat_dim, h_feat_dim):
-        super(GraphTower, self).__init__()
-        self.conv = DenseGraphConv(in_feat_dim, h_feat_dim, bias=True, activation=torch.nn.ReLU())
-
-    def forward(self, node_feat, adj):
-        h = self.conv(adj, node_feat)
-        return h
-
-class SimpleGraphTower(nn.Module):
-    # AXW
-    def __init__(self, in_feat_dim, h_feat_dim):
-        super(SimpleGraphTower, self).__init__()
-        self.conv = DenseGraphConv(in_feat_dim, h_feat_dim)
-
-    def forward(self, node_feat, adj):
-        h = self.conv(adj, node_feat)
-        return h 
-
-class LinearTower(nn.Module):
-    # XW
-    def __init__(self, in_feat_dim, h_feat_dim):
-        super(LinearTower, self).__init__()
-        self.mapping = torch.nn.Linear(in_feat_dim, h_feat_dim, bias=False)
-
-    def forward(self, node_feat, adj):
-        h = self.mapping(node_feat)
-        return h
-
 class HouseholderTower(nn.Module):
     # XH
     def __init__(self, in_feat_dim, hhr_number):
@@ -124,35 +81,28 @@ class HouseholderTower(nn.Module):
         qv = iden - torch.matmul(v, v.T) / torch.matmul(v.T, v)
         return torch.matmul(x, qv)
 
-    def forward(self, node_feat, adj):
+    def forward(self, node_feat):
         h = node_feat
         for i, v in enumerate(self.mapping_vectors):
             h = self._householderReflection(v, h)
         return h  
 
-MODELDICT = {
-  "linear" : LinearTower,
-  "nl_gnn" : GraphTower,
-  "gnn" : SimpleGraphTower,
-  "hh" : HouseholderTower
-}
-
 class GDSSM(nn.Module):
     
-    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, model_name="gnn", is_single_tower=False):
+    def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, is_single_tower=False):
         super(GDSSM, self).__init__()
-        self.src_tower = MODELDICT[model_name](src_in_feat_dim, h_feat_dim)
+        self.src_tower = HouseholderTower(src_in_feat_dim, h_feat_dim)
         if is_single_tower == True:
           self.tgt_tower = self._straight_forwoard
         else:
-          self.tgt_tower = MODELDICT[model_name](src_in_feat_dim, h_feat_dim)
+          self.tgt_tower = HouseholderTower(tgt_in_feat_dim, h_feat_dim)
 
-    def _straight_forwoard(self, x, a):
+    def _straight_forwoard(self, x):
         return x
 
-    def forward(self, node_feat_src, adj_src, node_feat_tgt, adj_tgt, src_index, tgts_index):
-        src_h = self.src_tower(node_feat_src, adj_src)
-        tgt_h = self.tgt_tower(node_feat_tgt, adj_tgt)
+    def forward(self, node_feat_src, node_feat_tgt, src_index, tgts_index):
+        src_h = self.src_tower(node_feat_src)
+        tgt_h = self.tgt_tower(node_feat_tgt)
 
         src_h_t = src_h[src_index]
         tgt_h_t = tgt_h[tgts_index]
@@ -192,12 +142,10 @@ class DssmTrainer:
       neg_si = logits[:, 1:]
       diff = pos_si[:, None] - neg_si
       bpr_loss = - diff.sigmoid().log().mean(1)
-      #for i, _ in enumerate(diff.detach().cpu().numpy().tolist()):
-      #  print(i, _[:20])
       bpr_loss_batch_mean = bpr_loss.mean()
       return bpr_loss_batch_mean
 
-    def fit(self, src_x, src_a, tgt_x, tgt_a, train_set, src_w2negs, val_set, src_i2w=None, tgt_i2w=None, verbose=False):
+    def fit(self, src_x, tgt_x, train_set, src_w2negs, val_set):
         
         # for evaluate and debug
         # eval_data_set = train_set
@@ -206,18 +154,11 @@ class DssmTrainer:
         for s, t in eval_data_set:
           eval_src2tgts[s].add(t)
         eval_src = list(set([_[0] for _ in eval_data_set])) 
- 
-        if src_i2w is None or tgt_i2w is None:
-          verbose = False
 
         model = self.model
         model.to(self.device)
-
         src_x = src_x.to(self.device)
         tgt_x = tgt_x.to(self.device)
-        if tgt_a != None and src_a != None:
-          src_a = src_a.to(self.device)
-          tgt_a = tgt_a.to(self.device)
 
         train_dataset = DssmDatasets(train_set, src_w2negs, 
                                       vocab_size=tgt_x.shape[0], 
@@ -249,7 +190,7 @@ class DssmTrainer:
                 tgts_index = tgts_index.to(self.device)
                 labels_index = labels_index.to(self.device)
                 
-                logits = model(src_x, src_a, tgt_x, tgt_a, src_index, tgts_index)
+                logits = model(src_x, tgt_x, src_index, tgts_index)
                 loss = loss_func(logits, labels_index)
 
                 loss.backward()
@@ -267,7 +208,7 @@ class DssmTrainer:
               #val_src = train_src
               #val_src2tgts = train_src2tgts
               print(f'In epoch {e} evaluate:')
-              acc, scores_result, tgts_result = self.eval(src_x, src_a, tgt_x, tgt_a, eval_src, eval_src2tgts)
+              acc, scores_result, tgts_result = self.eval(src_x, tgt_x, eval_src, eval_src2tgts)
               
               if best_val_acc < acc:
                 if acc[0] - save_best_acc[0] > 0.001:
@@ -275,29 +216,17 @@ class DssmTrainer:
                   save_best_acc = acc
                 best_val_acc = acc
                 best_epoch = e
-                # for debug
-                if verbose:
-                  src2pred_result_top100 = {}
-                  for i, s in enumerate(eval_src):
-                    si_word = src_i2w[s]
-                    pred_scores = scores_result[i][:50]
-                    pred_word = [tgt_i2w[_] for _ in tgts_result[i][:50]]
-                    src2pred_result_top100[si_word] = {
-                      'gold': [tgt_i2w[_] for _ in eval_src2tgts[s]],
-                      'pred': list(zip(pred_word, pred_scores))
-                      }
-                  with open('tmp.json', 'w', encoding='utf-8') as f:
-                    json.dump(src2pred_result_top100, f, ensure_ascii=False, indent=2)
+
               print(f"best result at epoch {best_epoch}: {best_val_acc}")
               
-    def eval(self, src_x, src_a, tgt_x, tgt_a, val_src, val_src2tgts):
+    def eval(self, src_x, tgt_x, val_src, val_src2tgts):
 
       tgts_result = []
       scores_result = []
       eval_bs = 24
       for i in range(0, len(val_src), eval_bs):
         j = min(i + eval_bs, len(val_src))
-        bs_pred_result = self.predict(src_x, src_a, tgt_x, tgt_a, val_src[i:j])
+        bs_pred_result = self.predict(src_x, tgt_x, val_src[i:j])
         #bs_tgts_result = torch.argsort(bs_pred_result, descending=True, dim=1).cpu().numpy().tolist()
         bs_score_result, bs_tgts_result = torch.sort(bs_pred_result, descending=True, dim=1)
         bs_score_result = bs_score_result.cpu().numpy().tolist()
@@ -318,15 +247,12 @@ class DssmTrainer:
         acc.append(count / len(val_src))
       return acc, scores_result, tgts_result
 
-    def predict(self, src_x, src_a, tgt_x, tgt_a, test_src, src2tgts_list=None):
+    def predict(self, src_x, tgt_x, test_src, src2tgts_list=None):
         model = self.model
         model.to(self.device)
 
         src_x = src_x.to(self.device)
         tgt_x = tgt_x.to(self.device)
-        if tgt_a != None and src_a != None:
-          src_a = src_a.to(self.device)
-          tgt_a = tgt_a.to(self.device)
 
         if src2tgts_list is None:
           test_tgts = [list(range(tgt_x.shape[0]))] * len(test_src)
@@ -341,7 +267,7 @@ class DssmTrainer:
         test_src = torch.tensor(test_src, dtype=torch.long, device=self.device)
         test_tgts = torch.tensor(test_tgts, dtype=torch.long, device=self.device)
         with torch.no_grad():
-          logits = model(src_x, src_a, tgt_x, tgt_a, test_src, test_tgts)
+          logits = model(src_x, tgt_x, test_src, test_tgts)
           pred = logits
         return pred
 
