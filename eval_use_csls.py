@@ -29,7 +29,6 @@ import gc
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
-from dssm_train import whitening_transformation_v4
 
 BATCH_SIZE = 250
 

@@ -34,7 +34,6 @@ class DssmDatasets(Dataset):
       # 在getitem的时候随机采样，是为了保证每个epoch采样得到的负例都不相同
       orig = self.datas[i]
       if self.hard_neg_random: 
-        #print(len(orig))
         hard_neg_sample_list = random.sample(orig[2:], self.hard_neg_per_pos)
         hard_neg_set = set(hard_neg_sample_list)
       else:
