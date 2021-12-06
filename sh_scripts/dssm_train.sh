@@ -1,16 +1,18 @@
-CUDA_VISIBLE_DEVICES=0 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5000.txt" \
+CUDA_VISIBLE_DEVICES=1 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5000.txt" \
                                             --val_dict "./data/en-zh/en-zh.5000-6500.txt" \
                                             --in_src "./data/en-zh/wiki.10k.en.vec" \
                                             --in_tar "./data/en-zh/wiki.10k.zh.vec" \
-                                            --out_src "./data/en-zh/hh.en-zh-aligned.EN.n3w4r.10k.0.0005.vec" \
-                                            --out_tar "./data/en-zh/hh.en-zh-aligned.ZH.n3w4r.10k.0.0005.vec" \
-                                            --model_filename "./data/en-zh/hh.ENZH-model.n3w4r.10k.0.0005.pickle" \
-                                            --graph_method "iden" \
-                                            --h_dim 300 \
-                                            --lr 0.0005 \
-                                            --hard_neg_sample 256 \
+                                            --out_src "./data/en-zh/en.whitening.tmp.vec" \
+                                            --out_tar "./data/en-zh/zh.whitening.tmp.vec" \
+                                            --model_filename "./data/en-zh/ENZH-model.tmp.pickle" \
                                             --train_batch_size 256 \
-                                            --train_epochs 1000 \
-                                            --model_name "hh" \
-                                            --use_origin_emb \
-                                            --use_whitening
+                                            --train_epochs 200 \
+                                            --use_whitening "post" \
+                                            --whitening_data "train" \
+                                            --random_neg_per_pos 256 \
+                                            --hard_neg_per_pos 256 \
+                                            --hard_neg_sampling_method "ab" \
+                                            --hard_neg_top_k 500 \
+                                            --hard_neg_random \
+                                            --h_dim 300 \
+                                            --lr 0.001

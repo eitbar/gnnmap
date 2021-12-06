@@ -13,12 +13,13 @@ import pickle
 #from transformers import WarmupLinearSchedule
 
 class DssmDatasets(Dataset):
-    def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_num=1000, hard_random_flag=True):
+    def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_per_pos=1000, hard_neg_per_pos=256, hard_neg_random=True):
       self.lens = len(pos_examples)
       self.vocab_size = vocab_size
       self.datas, self.src2gold = self._build_dataset(pos_examples, src_w2negs)
-      self.random_neg_num = random_neg_num
-      self.hard_random_flag = hard_random_flag
+      self.random_neg_per_pos = random_neg_per_pos
+      self.hard_neg_per_pos = hard_neg_per_pos
+      self.hard_neg_random = hard_neg_random
       random.seed(2021)
 
     def _build_dataset(self, pos_examples, src_w2negs):
@@ -32,9 +33,9 @@ class DssmDatasets(Dataset):
     def __getitem__(self, i):
       # 在getitem的时候随机采样，是为了保证每个epoch采样得到的负例都不相同
       orig = self.datas[i]
-      if self.hard_random_flag: 
+      if self.hard_neg_random: 
         #print(len(orig))
-        hard_neg_sample_list = random.sample(orig[2:], 256)
+        hard_neg_sample_list = random.sample(orig[2:], self.hard_neg_per_pos)
         hard_neg_set = set(hard_neg_sample_list)
       else:
         hard_neg_sample_list = orig[2:]
@@ -42,7 +43,7 @@ class DssmDatasets(Dataset):
 
       ground_true_set = self.src2gold[orig[0]]
       # 随机采样并与hard、gold去重
-      rand_sampling = random.sample(list(range(self.vocab_size)), self.random_neg_num)
+      rand_sampling = random.sample(list(range(self.vocab_size)), self.random_neg_per_pos)
       no_dup_random_neg = list(set(rand_sampling) - hard_neg_set - ground_true_set)
       new_item = orig[:2] + hard_neg_sample_list + no_dup_random_neg
       return new_item
@@ -117,17 +118,22 @@ class GDSSM(nn.Module):
 
 class DssmTrainer:
     def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, 
-                  device='gpu', epochs=100, lr=0.0001, train_batch_size=256, random_neg_sample=512, 
-                  model_name="gnn", model_save_file='tmp_model.pickle', is_single_tower=False):
+                  device='gpu', epochs=100, eval_every_epoch=5, lr=0.0001, train_batch_size=256,
+                  model_save_file='tmp_model.pickle', is_single_tower=False, 
+                  random_neg_per_pos=256, hard_neg_per_pos=256, hard_neg_random=True):
         # train config
         self.epochs = epochs
+        self.eval_every_epoch = eval_every_epoch
         self.train_batch_size = train_batch_size
-        self.random_neg_sample = random_neg_sample
+        self.random_neg_per_pos = random_neg_per_pos
         self.model_save_file = model_save_file
         self.device = torch.device("cuda" if torch.cuda.is_available() and device == 'gpu' else "cpu")
+        
+        self.hard_neg_per_pos = hard_neg_per_pos
+        self.hard_neg_random = hard_neg_random
         # model config
-        self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, model_name, is_single_tower)
-        self.loss_func = nn.CrossEntropyLoss()
+        self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, is_single_tower)
+        #self.loss_func = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         #self.scheduler = WarmupLinearSchedule(
         #self.optimizer, warmup_steps=0, t_total=epochs)
@@ -162,7 +168,9 @@ class DssmTrainer:
 
         train_dataset = DssmDatasets(train_set, src_w2negs, 
                                       vocab_size=tgt_x.shape[0], 
-                                      random_neg_num=self.random_neg_sample)
+                                      random_neg_per_pos=self.random_neg_per_pos,
+                                      hard_neg_per_pos=self.hard_neg_per_pos,
+                                      hard_neg_random=self.hard_neg_random)
 
         train_dataloader = DataLoader(train_dataset, 
                                 batch_size=self.train_batch_size,
@@ -203,7 +211,7 @@ class DssmTrainer:
                   e, step, loss, optimizer.state_dict()['param_groups'][0]['lr']))
 
             # evaluate test set
-            if e % 1 == 0 or e == self.epochs - 1:
+            if e % self.eval_every_epoch == 0 or e == self.epochs - 1:
               model.eval()
               #val_src = train_src
               #val_src2tgts = train_src2tgts

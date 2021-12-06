@@ -6,13 +6,9 @@ import numpy as np
 import sys
 import pickle
 import time
-from random import randrange
-from art_wrapper import run_supervised_alignment
 from sklearn.utils import shuffle
 import torch
-from tqdm import tqdm
 import random
-from graph_utils import calc_csls_sim, topk_mean
 from new_dssm import DssmTrainer
 import json
 import copy
@@ -117,7 +113,6 @@ def generate_negative_examples_v1(positive_examples, src_w2ind, tar_w2ind, src_i
   positive_src = [t[0] for t in positive_examples]
   positive_tar = [t[1] for t in positive_examples]
 
-  
   pos_src_word_indexes = [src_w2ind[i] for i in positive_src]
   pos_tar_word_indexes = [tar_w2ind[i] for i in positive_tar]
   
@@ -288,30 +283,8 @@ def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_i
   shuffle(return_list) 
   return return_list, src_word2neg_words, tgt_word2nns
 
-def generate_negative_examples_v4(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos):
-  xp = get_array_module(x)
-  sim_size = min(x.shape[0], z.shape[0])
-  u, s, vt = xp.linalg.svd(x[:sim_size], full_matrices=False)
-  xsim = (u*s).dot(u.T)
-  u, s, vt = xp.linalg.svd(z[:sim_size], full_matrices=False)
-  zsim = (u*s).dot(u.T)
-  del u, s, vt
-  xsim.sort(axis=1)
-  zsim.sort(axis=1)
-  normalize_method = ['unit', 'center', 'unit']
-  embeddings.normalize(xsim, normalize_method)
-  embeddings.normalize(zsim, normalize_method)
-  _, src_word2neg_words_sim_distri, _ = generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, xsim, zsim, 300, 128)
-  _, src_word2neg_words_neg, _ = generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos)
-  agg_src_word2_neg_words = {}
-  for _src in src_word2neg_words_sim_distri:
-    src_word2neg_words_sim_distri[_src] = [(_[0], 0) for _ in src_word2neg_words_sim_distri[_src]]
-    src_word2neg_words_neg[_src] = [(_[0], 0) for _ in src_word2neg_words_neg[_src]]
-    neg_set = list(set(src_word2neg_words_sim_distri[_src] + src_word2neg_words_neg[_src]))
-    agg_src_word2_neg_words[_src] = neg_set
-  return _, agg_src_word2_neg_words, _
 
-def generate_negative_examples_v5(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos):
+def generate_negative_examples_v4(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos):
   xp = get_array_module(x)
   sim_size = min(x.shape[0], z.shape[0])
   u, s, vt = xp.linalg.svd(x[:sim_size], full_matrices=False)
@@ -340,6 +313,42 @@ def generate_negative_examples_v5(positive_examples, src_w2ind, tar_w2ind, src_i
   print(sum(mean_len_list) / len(mean_len_list))
   return _, agg_src_word2_neg_words, _
 
+def generate_negative_examples_v5(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos):
+  xp = get_array_module(x)
+  sim_size = min(x.shape[0], z.shape[0])
+  u, s, vt = xp.linalg.svd(x[:sim_size], full_matrices=False)
+  xsim = (u*s).dot(u.T)
+  u, s, vt = xp.linalg.svd(z[:sim_size], full_matrices=False)
+  zsim = (u*s).dot(u.T)
+  del u, s, vt
+  xsim.sort(axis=1)
+  zsim.sort(axis=1)
+  normalize_method = ['unit', 'center', 'unit']
+  embeddings.normalize(xsim, normalize_method)
+  embeddings.normalize(zsim, normalize_method)
+  num_neg_per_pos = None
+  _, src_word2neg_words_sim_distri, _ = generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, xsim, zsim, top_k, num_neg_per_pos)
+  del xsim, zsim
+  _, src_word2neg_words_neg, _ = generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos)
+  
+  agg_src_word2_neg_words = {}
+  mean_len_list = []
+  for _src in src_word2neg_words_sim_distri:
+    src_word2neg_words_sim_distri[_src] = [(_[0], 0) for _ in src_word2neg_words_sim_distri[_src]]
+    src_word2neg_words_neg[_src] = [(_[0], 0) for _ in src_word2neg_words_neg[_src]]
+    neg_set = list(set(src_word2neg_words_sim_distri[_src] + src_word2neg_words_neg[_src]))
+    agg_src_word2_neg_words[_src] = neg_set
+    mean_len_list.append(len(neg_set))
+  print(sum(mean_len_list) / len(mean_len_list))
+  return _, agg_src_word2_neg_words, _
+
+NEG_SAMPLING_METHOD = {
+  'ab' : generate_negative_examples_v3,
+  'abc' : generate_negative_examples_v4,
+  'abd' : generate_negative_examples_v5
+}
+
+
 def whitening_transformation_v1(embedding):
   xp = get_array_module(embedding)
   miu = xp.mean(embedding, 0)
@@ -353,12 +362,16 @@ def whitening_transformation_v1(embedding):
   new_embedding = _embedding.dot(w)
   return new_embedding
 
-def whitening_transformation_v2(embedding):
+def whitening_transformation_v2(embedding, seed_index=None):
   xp = get_array_module(embedding)
-  u, s, vt = xp.linalg.svd(embedding, full_matrices=False)
+  if seed_index != None:
+    seed_embeddings = embedding[seed_index]
+  else:
+    seed_embeddings = embedding
+  u, s, vt = xp.linalg.svd(seed_embeddings, full_matrices=False)
   w = vt.T.dot(xp.diag(1/s)).dot(vt)
   new_embedding = embedding.dot(w)
-  return new_embedding
+  return new_embedding 
 
 def whitening_transformation_v3(embedding):
   xp = get_array_module(embedding)
@@ -379,16 +392,6 @@ def whitening_transformation_v3(embedding):
   new_embedding = new_embedding.astype(embedding.dtype)
   return new_embedding
 
-def whitening_transformation_v4(embedding, seed_index=None):
-  if seed_index == None:
-    return whitening_transformation_v2(embedding)
-  xp = get_array_module(embedding)
-  seed_embeddings = embedding[seed_index]
-  u, s, vt = xp.linalg.svd(seed_embeddings, full_matrices=False)
-  w = vt.T.dot(xp.diag(1/s)).dot(vt)
-  new_embedding = embedding.dot(w)
-  return new_embedding  
-
 def training_noise_reduction(positive_examples):
   new_positive_examples = []
   for s, t in positive_examples:
@@ -401,11 +404,9 @@ def run_dssm_trainning(args):
   SL_start_time = time.time()
 
   # 对于每个src，从tgt单词的cos相似度最高的neg_top_k个单词中随机采样neg_per_pos个
-  neg_top_k = 500
-  neg_per_pos = args.hard_neg_sample
+  neg_top_k = args.hard_neg_top_k
+  hard_neg_per_pos = args.hard_neg_per_pos
   debug = args.debug
-  model_out_filename = args.model_filename
- 
 
   # load up the embeddings
   print("Loading embeddings from disk ...")
@@ -452,36 +453,49 @@ def run_dssm_trainning(args):
   val_trg_indices = [trg_word2ind[t[1]] for t in val_examples] 
   
   # 调用vecmap
-  # 返回结果xw，zw是embedding矩阵，这个embedding矩阵是映射过后的embedding矩阵
   # call artetxe to get the initial alignment on the initial train dict
-  if args.use_origin_emb:
-    xw, zw = x, z 
-  else:
-    print("Starting the Artetxe et al. alignment ...") 
-    xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision)
- 
+  xw, zw = x, z
+
   embeddings.normalize(xw, ['unit', 'center', 'unit'])
   embeddings.normalize(zw, ['unit', 'center', 'unit'])
 
+  if args.use_whitening is not None and args.use_whitening == "pre":
+    if args.whitening_data == "train":
+      src_indices_for_whitening = sorted(list(set(src_indices)))
+      tgt_indices_for_whitening = sorted(list(set(trg_indices)))
+    else:
+      src_indices_for_whitening = None
+      tgt_indices_for_whitening = None
+    xw = whitening_transformation_v2(xw, src_indices_for_whitening)
+    zw = whitening_transformation_v2(zw, tgt_indices_for_whitening)    
+
+
   # 生成负例,hard neg examples
   # 返回的是负例word pair的list
-  # generate negative examples for the current 
-  neg_per_pos = None
+  # generate negative examples for the current
+  if args.hard_neg_random:
+    neg_per_pos = None
   print("Generating negative examples ...")
-  neg_examples, src_w2negs, src_w2nns =  generate_negative_examples_v3(pos_examples, 
-                                                                       src_word2ind, 
-                                                                       trg_word2ind, 
-                                                                       src_ind2word, 
-                                                                       trg_ind2word, 
-                                                                       copy.deepcopy(xw), 
-                                                                       copy.deepcopy(zw), 
-                                                                       top_k = neg_top_k, 
-                                                                       num_neg_per_pos = neg_per_pos)
+  generate_negative_func = NEG_SAMPLING_METHOD[args.hard_neg_sampling_method]
+  neg_examples, src_w2negs, src_w2nns =  generate_negative_func(pos_examples, 
+                                                                src_word2ind, 
+                                                                trg_word2ind, 
+                                                                src_ind2word, 
+                                                                trg_ind2word, 
+                                                                copy.deepcopy(xw), 
+                                                                copy.deepcopy(zw), 
+                                                                top_k = neg_top_k, 
+                                                                num_neg_per_pos = hard_neg_per_pos)
 
-  if args.use_whitening:
-    print("use_whitening")
-    xw = whitening_transformation_v4(xw, sorted(list(set(src_indices))))
-    zw = whitening_transformation_v4(zw, sorted(list(set(trg_indices))))
+  if args.use_whitening is not None and args.use_whitening == "post":
+    if args.whitening_data == "train":
+      src_indices_for_whitening = sorted(list(set(src_indices)))
+      tgt_indices_for_whitening = sorted(list(set(trg_indices)))
+    else:
+      src_indices_for_whitening = None
+      tgt_indices_for_whitening = None
+    xw = whitening_transformation_v2(xw, src_indices_for_whitening)
+    zw = whitening_transformation_v2(zw, tgt_indices_for_whitening)  
 
   if debug:
     # 保存hard neg sample结果用于debug
@@ -505,12 +519,15 @@ def run_dssm_trainning(args):
   model = DssmTrainer(torch_xw.shape[1], 
                         torch_zw.shape[1], 
                         args.h_dim, 
-                        random_neg_sample=args.random_neg_sample, 
-                        epochs=args.train_epochs, 
+                        random_neg_per_pos=args.random_neg_per_pos, 
+                        epochs=args.train_epochs,
+                        eval_every_epoch=args.eval_every_epoch,
                         lr=args.lr,
                         train_batch_size=args.train_batch_size,
                         model_save_file=args.model_filename,
-                        is_single_tower=args.is_single_tower)
+                        is_single_tower=args.is_single_tower,
+                        hard_neg_per_pos=hard_neg_per_pos,
+                        hard_neg_random=args.hard_neg_random)
                         
   model.fit(torch_xw, torch_zw, train_set, src_w2negs, val_set)
 
@@ -536,29 +553,27 @@ if __name__ == "__main__":
   parser.add_argument('--in_tar', type=str, help='Name of the input target language embeddings file.', required = True)
   parser.add_argument('--out_src', type=str, help='Name of the output source languge embeddings file.', required = True)
   parser.add_argument('--out_tar', type=str, help='Name of the output target language embeddings file.', required = True)
-  parser.add_argument('--use_origin_emb', action='store_true', help='use origin fasttext embeddings as model input')
-  parser.add_argument('--use_whitening', action='store_true', help='use whitening transformation as preprocess')
-  
-  
+  # parameters
 
-  # graph related para
-  parser.add_argument('--graph_method', type=str, default='iden')
-  parser.add_argument('--graph_knn', type=int, default=3)
-  parser.add_argument('--graph_threshold', type=float, default=0.8)
-
+  parser.add_argument('--use_whitening', type=str, choices=["pre", "post", None], default=None, help='use whitening transformation before neg sampling as preprocess') 
+  parser.add_argument('--whitening_data', type=str, choices=["train", "all"], default="train", help='use whitening transformation before neg sampling as preprocess') 
+  
   # model related para
-  parser.add_argument('--model_name', type=str, choices=["gnn", "linear", "hh", "nl_gnn"], default="gnn", help='select model method')
   parser.add_argument('--is_single_tower', action='store_true', help='use single tower')
   parser.add_argument('--h_dim', type=int, default=300, help='hidden states dim in GNN')
-  parser.add_argument('--hard_neg_sample', type=int, default=256, help='number of hard negative examples')
-  parser.add_argument('--random_neg_sample', type=int, default=256, help='number of random negative examples')
-  parser.add_argument('--train_batch_size', type=int, default=256, help='train batch size')
-  parser.add_argument('--train_epochs', type=int, default=70, help='train epochs')
   parser.add_argument('--lr', type=float, default=0.0001, help='learning rate')
 
+  parser.add_argument('--hard_neg_per_pos', type=int, default=256, help='number of hard negative examples')
+  parser.add_argument('--hard_neg_sampling_method', type=str, choices=['ab', 'abc', 'abd'], default='ab', help='method of neg sampling')
+  parser.add_argument('--hard_neg_random', action='store_true', help='random sampling hard in every epoch')
+  
+  parser.add_argument('--hard_neg_top_k', type=int, default=500, help='number of topk examples for select hard neg word')
+  parser.add_argument('--random_neg_per_pos', type=int, default=256, help='number of random negative examples')
+  parser.add_argument('--train_batch_size', type=int, default=256, help='train batch size')
+  parser.add_argument('--train_epochs', type=int, default=70, help='train epochs')
+  parser.add_argument('--eval_every_epoch', type=int, default=5, help='eval epochs')
   
   parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)
-  parser.add_argument('--art_supervision', type=str,  default="--supervised", help='Supervision argument to pass on to Artetxe et al. code. Default is "--supervised".')
   parser.add_argument('--debug', action='store_true', help='store debug info')
 
   args = parser.parse_args()
