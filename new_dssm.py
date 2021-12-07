@@ -26,7 +26,10 @@ class DssmDatasets(Dataset):
       datas = []
       src2gold = collections.defaultdict(set)
       for pos_src, pos_tgt in pos_examples:
-        datas.append([pos_src, pos_tgt] + list(src_w2negs[pos_src]))
+        if pos_src in src_w2negs:
+          datas.append([pos_src, pos_tgt] + list(src_w2negs[pos_src]))
+        else:
+          datas.append([pos_src, pos_tgt] + list(src_w2negs[(pos_src, pos_tgt)]))
         src2gold[pos_src].add(pos_tgt)
       return datas, src2gold
 
@@ -34,6 +37,7 @@ class DssmDatasets(Dataset):
       # 在getitem的时候随机采样，是为了保证每个epoch采样得到的负例都不相同
       orig = self.datas[i]
       if self.hard_neg_random: 
+        #print(len(orig[2:]))
         hard_neg_sample_list = random.sample(orig[2:], self.hard_neg_per_pos)
         hard_neg_set = set(hard_neg_sample_list)
       else:
@@ -118,7 +122,7 @@ class GDSSM(nn.Module):
 class DssmTrainer:
     def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, 
                   device='gpu', epochs=100, eval_every_epoch=5, lr=0.0001, train_batch_size=256,
-                  model_save_file='tmp_model.pickle', is_single_tower=False, 
+                  model_save_file='tmp_model.pickle', is_single_tower=False, shuffle_in_train=True,
                   random_neg_per_pos=256, hard_neg_per_pos=256, hard_neg_random=True):
         # train config
         self.epochs = epochs
@@ -130,6 +134,7 @@ class DssmTrainer:
         
         self.hard_neg_per_pos = hard_neg_per_pos
         self.hard_neg_random = hard_neg_random
+        self.shuffle_in_train = shuffle_in_train
         # model config
         self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, is_single_tower)
         #self.loss_func = nn.CrossEntropyLoss()
@@ -177,7 +182,7 @@ class DssmTrainer:
 
         train_dataloader = DataLoader(train_dataset, 
                                 batch_size=self.train_batch_size,
-                                shuffle=False, 
+                                shuffle=self.shuffle_in_train, 
                                 collate_fn=train_dataset.collate)
         
         optimizer = self.optimizer
