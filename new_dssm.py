@@ -150,7 +150,7 @@ class DssmTrainer:
       bpr_loss_batch_mean = bpr_loss.mean()
       return bpr_loss_batch_mean
 
-    def fit(self, src_x, tgt_x, train_set, src_w2negs, val_set):
+    def fit(self, src_x, tgt_x, train_set, src_w2negs, val_set, torch_orig_xw=None, torch_orig_zw=None):
         
         # for evaluate and debug
         # eval_data_set = train_set
@@ -164,6 +164,10 @@ class DssmTrainer:
         model.to(self.device)
         src_x = src_x.to(self.device)
         tgt_x = tgt_x.to(self.device)
+        if torch_orig_xw is not None:
+          torch_orig_xw = torch_orig_xw.to(self.device)
+        if torch_orig_zw is not None:
+          torch_orig_zw = torch_orig_zw.to(self.device)          
 
         train_dataset = DssmDatasets(train_set, src_w2negs, 
                                       vocab_size=tgt_x.shape[0], 
@@ -215,8 +219,11 @@ class DssmTrainer:
               #val_src = train_src
               #val_src2tgts = train_src2tgts
               print(f'In epoch {e} evaluate:')
-              acc, scores_result, tgts_result = self.eval(src_x, tgt_x, eval_src, eval_src2tgts)
-              
+              if torch_orig_xw is not None and torch_orig_zw is not None:
+                acc, scores_result, tgts_result = self.eval(torch_orig_xw, torch_orig_zw, eval_src, eval_src2tgts)
+              else:
+                acc, scores_result, tgts_result = self.eval(src_x, tgt_x, eval_src, eval_src2tgts)
+
               if best_val_acc < acc:
                 if acc[0] - save_best_acc[0] > 0.001:
                   self.save()

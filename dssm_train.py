@@ -457,6 +457,10 @@ def run_dssm_trainning(args):
   embeddings.normalize(xw, ['unit', 'center', 'unit'])
   embeddings.normalize(zw, ['unit', 'center', 'unit'])
 
+  with torch.no_grad():
+    torch_orig_xw = torch.from_numpy(asnumpy(xw))
+    torch_orig_zw = torch.from_numpy(asnumpy(zw))
+
   if args.use_whitening is not None and args.use_whitening == "pre":
     if args.whitening_data == "train":
       src_indices_for_whitening = sorted(list(set(src_indices)))
@@ -527,7 +531,7 @@ def run_dssm_trainning(args):
                         hard_neg_per_pos=args.hard_neg_per_pos,
                         hard_neg_random=args.hard_neg_random)
                         
-  model.fit(torch_xw, torch_zw, train_set, src_w2negs, val_set)
+  model.fit(torch_xw, torch_zw, train_set, src_w2negs, val_set, torch_orig_xw, torch_orig_zw)
 
   print("Writing output to files ...")
   # write res to disk
