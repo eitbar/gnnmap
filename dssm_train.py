@@ -6,7 +6,6 @@ import numpy as np
 import sys
 import pickle
 import time
-from sklearn.utils import shuffle
 import torch
 import random
 from new_dssm import DssmTrainer

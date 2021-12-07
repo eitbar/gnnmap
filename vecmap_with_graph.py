@@ -13,7 +13,7 @@ import math
 import torch
 from tqdm import tqdm
 import random
-
+from dssm_train import generate_negative_examples_v3
 
 def dropout(m, p):
     if p <= 0.0:
@@ -498,6 +498,43 @@ def run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indice
     # Write mapped embeddings
     return(xw, zw)
 
+def sigmoid(z):
+    xp = get_array_module(z)
+    return 1/(1 + xp.exp(-z))
+
+def calc_bpr_loss(x, z, src_w2neg, pos_exmaple):
+    xp = get_array_module(x)
+    src2gold = collections.defaultdict(set)
+    for s, t in pos_exmaple:
+        src2gold[s].add(t) 
+    total_loss = 0
+    for s, t in tqdm(pos_exmaple):
+        hard_negs = src_w2neg[s]
+        random_negs = random.sample(list(range(z.shape[0])), 256)
+        ground_true_set = src2gold[s]
+        # 随机采样并与hard、gold去重
+        no_dup_random_neg = list(set(random_negs) - set(hard_negs) - ground_true_set)
+        neg_list = list(hard_negs) + list(no_dup_random_neg)
+        #print(len(neg_list))
+        pos_score = x[s].dot(z[t])
+        loss = 0
+        for neg_i in neg_list:
+            loss += - xp.log(sigmoid(pos_score - x[s].dot(z[neg_i])))
+        loss = loss / len(neg_list)
+        total_loss += loss
+    print(total_loss / len(pos_exmaple))
+
+
+
+
+
+
+
+
+        
+    
+
+
 def run_selflearning(args):
   SL_start_time = time.time()
  
@@ -545,8 +582,15 @@ def run_selflearning(args):
 
   xw, zw = run_supervised_alignment(src_words, trg_words, x, z, src_indices, trg_indices, supervision = args.art_supervision, flag=False)    
 
-
-
+  
+  if args.calc_bpr_loss:
+    embeddings.normalize(x, ['unit', 'center', 'unit'])
+    embeddings.normalize(z, ['unit', 'center', 'unit'])
+    src_w2negs, _ = generate_negative_examples_v3(pos_examples, src_word2ind, trg_word2ind, src_ind2word, trg_ind2word, x, z, 500, 256, False)
+    for key in src_w2negs:
+      src_w2negs[key] = [_[0] for _ in src_w2negs[key]]
+    pos_ind_exmaples = [(src_word2ind[s], trg_word2ind[t]) for s, t in pos_examples]
+    calc_bpr_loss(xw, zw, src_w2negs, pos_ind_exmaples)
   src_output_filename = "./SRC_SUPERVISED_" + task_name + "-nosl.txt"
   tar_output_filename = "./TAR_SUPERVISED_" + task_name + "-nosl.txt"
   srcfile = open(src_output_filename, mode='w', encoding="utf-8", errors='surrogateescape')
@@ -571,6 +615,7 @@ if __name__ == "__main__":
    parser.add_argument('--idstring', type=str,  default="EXP", help='Special id string that will be included in all generated model and cache files. Default is EXP.')
 
    parser.add_argument('--art_supervision', type=str,  default="--supervised", help='Supervision argument to pass on to Artetxe et al. code. Default is "--supervised".')
+   parser.add_argument('--calc_bpr_loss', action='store_true', help='calc bpr loss in train')
 
 
    args = parser.parse_args()

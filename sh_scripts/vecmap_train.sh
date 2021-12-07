@@ -3,4 +3,5 @@ CUDA_VISIBLE_DEVICES=1 python vecmap_with_graph.py --train_dict "./data/en-zh/en
                                             --in_tar "./data/en-zh/wiki.10k.zh.vec" \
                                             --src_lid "en" \
                                             --tar_lid "zh" \
+                                            --calc_bpr_loss \
                                             --idstring ENZHFASTTEXT_10k
