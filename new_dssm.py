@@ -13,42 +13,78 @@ import pickle
 #from transformers import WarmupLinearSchedule
 
 class DssmDatasets(Dataset):
-    def __init__(self, pos_examples, src_w2negs, vocab_size=30000, random_neg_per_pos=1000, hard_neg_per_pos=256, hard_neg_random=True):
+    def __init__(self, pos_examples, src2negtgts, tgt2negsrcs=None, vocab_size=30000, 
+                random_neg_per_pos=1000, hard_neg_per_pos=256, hard_neg_random=True):
       self.lens = len(pos_examples)
       self.vocab_size = vocab_size
-      self.datas, self.src2gold = self._build_dataset(pos_examples, src_w2negs)
+      self.sample2negtgts = src2negtgts
+      self.sample2negsrcs = tgt2negsrcs
+      self.datas, self.src2gold, self.tgt2gold = self._build_dataset(pos_examples)
       self.random_neg_per_pos = random_neg_per_pos
       self.hard_neg_per_pos = hard_neg_per_pos
       self.hard_neg_random = hard_neg_random
       random.seed(2021)
 
-    def _build_dataset(self, pos_examples, src_w2negs):
+    def _build_dataset(self, pos_examples):
       datas = []
       src2gold = collections.defaultdict(set)
+      tgt2gold = collections.defaultdict(set)
+      new_sample2negtgts = collections.defaultdict(set)
+      new_sample2negsrcs = collections.defaultdict(set)
+      # 如果src在sample2negtgts说明是word-wise的
+      is_word_wise = pos_examples[0][0] in self.sample2negtgts
+
       for pos_src, pos_tgt in pos_examples:
-        if pos_src in src_w2negs:
-          datas.append([pos_src, pos_tgt] + list(src_w2negs[pos_src]))
-        else:
-          datas.append([pos_src, pos_tgt] + list(src_w2negs[(pos_src, pos_tgt)]))
+        datas.append([pos_src, pos_tgt])
         src2gold[pos_src].add(pos_tgt)
-      return datas, src2gold
+        tgt2gold[pos_tgt].add(pos_src)
+        # 在这里把word-wise改成sample-wise
+        if is_word_wise:
+          new_sample2negtgts[(pos_src, pos_tgt)] = self.sample2negtgts[pos_src]
+          if self.sample2negsrcs is not None:
+            new_sample2negsrcs[(pos_src, pos_tgt)] = self.sample2negsrcs[pos_tgt]
+      if is_word_wise:
+        self.sample2negtgts = new_sample2negtgts
+        if self.sample2negsrcs is not None:
+          self.sample2negsrcs = new_sample2negsrcs
+      return datas, src2gold, tgt2gold
 
     def __getitem__(self, i):
       # 在getitem的时候随机采样，是为了保证每个epoch采样得到的负例都不相同
       orig = self.datas[i]
+      src = orig[0]
+      tgt = orig[1]
+      negtgts = list(self.sample2negtgts[(src, tgt)])
       if self.hard_neg_random: 
         #print(len(orig[2:]))
-        hard_neg_sample_list = random.sample(orig[2:], self.hard_neg_per_pos)
-        hard_neg_set = set(hard_neg_sample_list)
+        hard_neg_tgts_list = random.sample(negtgts, self.hard_neg_per_pos)
+        hard_neg_tgts_set = set(hard_neg_tgts_list)
       else:
-        hard_neg_sample_list = orig[2:]
-        hard_neg_set = set(hard_neg_sample_list)
+        hard_neg_tgts_list = negtgts
+        hard_neg_tgts_set = set(hard_neg_tgts_list)
 
-      ground_true_set = self.src2gold[orig[0]]
-      # 随机采样并与hard、gold去重
-      rand_sampling = random.sample(list(range(self.vocab_size)), self.random_neg_per_pos)
-      no_dup_random_neg = list(set(rand_sampling) - hard_neg_set - ground_true_set)
-      new_item = orig[:2] + hard_neg_sample_list + no_dup_random_neg
+      rand_sampling_tgts = random.sample(list(range(self.vocab_size)), self.random_neg_per_pos)
+      no_dup_random_tgts = list(set(rand_sampling_tgts) - hard_neg_tgts_set - self.src2gold[src])
+      combi_tgts = rand_sampling_tgts + no_dup_random_tgts
+
+      # 双向
+      combi_srcs = []
+      if self.sample2negsrcs is not None:
+        negsrcs = list(self.sample2negsrcs[(src, tgt)])
+        if self.hard_neg_random: 
+          #print(len(orig[2:]))
+          hard_neg_srcs_list = random.sample(negsrcs, self.hard_neg_per_pos)
+          hard_neg_srcs_set = set(hard_neg_srcs_list)
+        else:
+          hard_neg_srcs_list = negsrcs
+          hard_neg_srcs_set = set(hard_neg_srcs_list)
+
+        rand_sampling_srcs = random.sample(list(range(self.vocab_size)), self.random_neg_per_pos)
+        no_dup_random_srcs = list(set(rand_sampling_srcs) - hard_neg_srcs_set - self.tgt2gold[tgt])
+        combi_srcs = rand_sampling_srcs + no_dup_random_srcs
+      # 每个item是一个tuple，由两个list组成，第一个是src的list，第二个是tgt的list
+      # 正例永远位于list首位
+      new_item = ([src] + combi_srcs, [tgt] + combi_tgts)
       return new_item
 
     def __len__(self):
@@ -56,20 +92,25 @@ class DssmDatasets(Dataset):
 
     def collate(self, features):
       # ground truth 总是位于tgts_list的首位
-      src_list = [_[0] for _ in features]
-      tgts_list = [_[1:] for _ in features]
-      labels_list = [0 for _ in features]
+      srcs_list = [_[0] for _ in features]
+      tgts_list = [_[1] for _ in features]
+      labels_list = [[0, 0] for _ in features]
 
       # batch内data cut到同一长度      
-      min_neg_size = min([len(_) for _ in tgts_list])
+      min_neg_tgt_size = min([len(_) for _ in tgts_list])
       for i in range(len(tgts_list)):
-        tgts_list[i] = tgts_list[i][:min_neg_size]
+        tgts_list[i] = tgts_list[i][:min_neg_tgt_size]
+
+      # batch内data cut到同一长度      
+      min_neg_src_size = min([len(_) for _ in srcs_list])
+      for i in range(len(srcs_list)):
+        srcs_list[i] = srcs_list[i][:min_neg_src_size]      
 
       # to_tensor
-      src_index = torch.tensor(src_list, dtype=torch.long)
+      srcs_list_index = torch.tensor(srcs_list, dtype=torch.long)
       tgts_list_index = torch.tensor(tgts_list, dtype=torch.long)
       labels_list = torch.tensor(labels_list, dtype=torch.long)
-      return src_index, tgts_list_index, labels_list
+      return srcs_list_index, tgts_list_index, labels_list
 
 class HouseholderTower(nn.Module):
     # XH
@@ -104,19 +145,27 @@ class GDSSM(nn.Module):
     def _straight_forwoard(self, x):
         return x
 
-    def forward(self, node_feat_src, node_feat_tgt, src_index, tgts_index):
+    def forward(self, node_feat_src, node_feat_tgt, srcs_index, tgts_index):
         src_h = self.src_tower(node_feat_src)
         tgt_h = self.tgt_tower(node_feat_tgt)
 
-        src_h_t = src_h[src_index]
-        tgt_h_t = tgt_h[tgts_index]
+        pos_src = src_h[srcs_index[:, 0]]
+        pos_tgt = tgt_h[tgts_index[:, 0]]
 
-        src_h_t_norm = F.normalize(src_h_t)
-        tgt_h_t_norm = F.normalize(tgt_h_t, dim=2)
+        src_list = src_h[srcs_index]
+        tgt_list = tgt_h[tgts_index]
 
-        sim = torch.matmul(src_h_t_norm.unsqueeze(1), tgt_h_t_norm.transpose(1,2))
-        logits = sim.squeeze()     
-        return logits
+        pos_src_norm = F.normalize(pos_src)
+        tgt_list_norm = F.normalize(tgt_list, dim=2)
+        sim_src2tgt = torch.matmul(pos_src_norm.unsqueeze(1), tgt_list_norm.transpose(1,2))
+
+        pos_tgt_norm = F.normalize(pos_tgt)
+        src_list_norm = F.normalize(src_list, dim=2)
+        sim_tgt2src = torch.matmul(pos_tgt_norm.unsqueeze(1), src_list_norm.transpose(1,2))
+
+        logits_src2tgt = sim_src2tgt.squeeze()
+        logits_tgt2src = sim_tgt2src.squeeze()    
+        return logits_src2tgt, logits_tgt2src
 
 
 class DssmTrainer:
@@ -155,7 +204,7 @@ class DssmTrainer:
       bpr_loss_batch_mean = bpr_loss.mean()
       return bpr_loss_batch_mean
 
-    def fit(self, src_x, tgt_x, train_set, src_w2negs, val_set, torch_orig_xw=None, torch_orig_zw=None):
+    def fit(self, src_x, tgt_x, train_set, src2negtgts, tgt2negsrcs, val_set, torch_orig_xw=None, torch_orig_zw=None):
         
         # for evaluate and debug
         # eval_data_set = train_set
@@ -174,7 +223,7 @@ class DssmTrainer:
         if torch_orig_zw is not None:
           torch_orig_zw = torch_orig_zw.to(self.device)          
 
-        train_dataset = DssmDatasets(train_set, src_w2negs, 
+        train_dataset = DssmDatasets(train_set, src2negtgts, tgt2negsrcs,
                                       vocab_size=tgt_x.shape[0], 
                                       random_neg_per_pos=self.random_neg_per_pos,
                                       hard_neg_per_pos=self.hard_neg_per_pos,
@@ -201,22 +250,31 @@ class DssmTrainer:
             # Forward
             model.train()
             for step, batch in enumerate(train_dataloader):
-                src_index, tgts_index, labels_index = batch
-                src_index = src_index.to(self.device)
+                srcs_index, tgts_index, labels_index = batch
+                srcs_index = srcs_index.to(self.device)
                 tgts_index = tgts_index.to(self.device)
                 labels_index = labels_index.to(self.device)
                 
-                logits = model(src_x, tgt_x, src_index, tgts_index)
-                loss = loss_func(logits, labels_index)
-
+                logits_src2tgt, logits_tgt2src = model(src_x, tgt_x, srcs_index, tgts_index)
+                #if e > 30:
+                #  print(logits_src2tgt[0].detach().cpu().numpy().tolist())
+                #  print(logits_tgt2src[0].detach().cpu().numpy().tolist())
+                loss1 = loss_func(logits_src2tgt, labels_index)
+                loss2 = 0
+                if srcs_index.shape[1] > 1:
+                  loss2 = loss_func(logits_tgt2src, labels_index)
+                  loss = (loss1 + loss2) / 2
+                else:
+                  loss = loss1
+                
                 loss.backward()
                 optimizer.step()
                 #scheduler.step()
                 optimizer.zero_grad()
                 global_step += 1
                 #self._liner_adjust_lr(optimizer, total_step, 0.01, 0.0001, global_step)
-                print('In epoch {}, step: {}, loss: {:.5f}, lr: {:.8f} '.format(
-                  e, step, loss, optimizer.state_dict()['param_groups'][0]['lr']))
+                print('In epoch {}, step: {}, loss: {:.5f}, loss1: {:.5f}, loss2: {:.5f}, lr: {:.8f} '.format(
+                  e, step, loss, loss1, loss2, optimizer.state_dict()['param_groups'][0]['lr']))
 
             # evaluate test set
             if e % self.eval_every_epoch == 0 or e == self.epochs - 1:
@@ -272,12 +330,14 @@ class DssmTrainer:
 
         src_x = src_x.to(self.device)
         tgt_x = tgt_x.to(self.device)
+        
 
         if src2tgts_list is None:
           test_tgts = [list(range(tgt_x.shape[0]))] * len(test_src)
         else:
           test_tgts = [src2tgts_list[_] for _ in test_src]
         
+        test_src = [[_] for _ in test_src]
         # pad
         max_tgts_len = max([len(_) for _ in test_tgts])
         for i in range(len(test_tgts)):
@@ -286,7 +346,7 @@ class DssmTrainer:
         test_src = torch.tensor(test_src, dtype=torch.long, device=self.device)
         test_tgts = torch.tensor(test_tgts, dtype=torch.long, device=self.device)
         with torch.no_grad():
-          logits = model(src_x, tgt_x, test_src, test_tgts)
+          logits, _ = model(src_x, tgt_x, test_src, test_tgts)
           pred = logits
         return pred
 
