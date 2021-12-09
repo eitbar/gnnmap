@@ -56,7 +56,7 @@ class DssmDatasets(Dataset):
       tgt = orig[1]
       negtgts = list(self.sample2negtgts[(src, tgt)])
       if self.hard_neg_random: 
-        #print(len(orig[2:]))
+        #print(len(negtgts))
         hard_neg_tgts_list = random.sample(negtgts, self.hard_neg_per_pos)
         hard_neg_tgts_set = set(hard_neg_tgts_list)
       else:

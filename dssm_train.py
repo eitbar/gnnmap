@@ -577,8 +577,8 @@ def run_dssm_trainning(args):
 
   if args.use_whitening is not None and args.use_whitening == "pre":
     if args.whitening_data == "train":
-      src_indices_for_whitening = sorted(list(set(src_indices)))
-      tgt_indices_for_whitening = sorted(list(set(trg_indices)))
+      src_indices_for_whitening = sorted(list(set(src_indices))) if args.whitening_sort else src_indices
+      tgt_indices_for_whitening = sorted(list(set(trg_indices))) if args.whitening_sort else trg_indices
     else:
       src_indices_for_whitening = None
       tgt_indices_for_whitening = None
@@ -607,8 +607,8 @@ def run_dssm_trainning(args):
 
   if args.use_whitening is not None and args.use_whitening == "post":
     if args.whitening_data == "train":
-      src_indices_for_whitening = sorted(list(set(src_indices)))
-      tgt_indices_for_whitening = sorted(list(set(trg_indices)))
+      src_indices_for_whitening = sorted(list(set(src_indices))) if args.whitening_sort else src_indices
+      tgt_indices_for_whitening = sorted(list(set(trg_indices))) if args.whitening_sort else trg_indices
     else:
       src_indices_for_whitening = None
       tgt_indices_for_whitening = None
@@ -679,7 +679,8 @@ if __name__ == "__main__":
 
   parser.add_argument('--use_whitening', type=str, choices=["pre", "post", None], default=None, help='use whitening transformation before neg sampling as preprocess') 
   parser.add_argument('--whitening_data', type=str, choices=["train", "all"], default="train", help='use whitening transformation before neg sampling as preprocess') 
-  
+  parser.add_argument('--whitening_sort', action='store_true', help='sort whitening data')
+
   # model related para
   parser.add_argument('--is_single_tower', action='store_true', help='use single tower')
   parser.add_argument('--h_dim', type=int, default=300, help='hidden states dim in GNN')
