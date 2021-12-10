@@ -9,6 +9,7 @@ CUDA_VISIBLE_DEVICES=3 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5
                                             --train_epochs 200 \
                                             --eval_every_epoch 5 \
                                             --shuffle_in_train \
+                                            --whitening_sort \
                                             --use_whitening "post" \
                                             --whitening_data "train" \
                                             --random_neg_per_pos 256 \
@@ -17,4 +18,5 @@ CUDA_VISIBLE_DEVICES=3 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5
                                             --hard_neg_top_k 500 \
                                             --hard_neg_random \
                                             --h_dim 300 \
-                                            --lr 0.001
+                                            --lr 0.001 \
+                                            --debug

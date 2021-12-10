@@ -38,13 +38,17 @@ def debug_sample_wise_neg(sample2tgtsneg, sample2srcsneg, src_ind2word, trg_ind2
     # 保存hard neg sample结果用于debug
     neg_result = []
     for s, t in train_set:
-      neg_trg_word_list = sample2tgtsneg[(s, t)]
+      if s in sample2tgtsneg:
+        neg_trg_word_list = sample2tgtsneg[s]
+      else:
+        neg_trg_word_list = sample2tgtsneg[(s, t)]
       neg_trg_word_list = sorted(neg_trg_word_list, key=lambda x:x[1], reverse=True)
       neg_trg_word_list = [trg_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in neg_trg_word_list]
-
-      neg_src_word_list = sample2srcsneg[(s, t)] 
-      neg_src_word_list = sorted(neg_src_word_list, key=lambda x:x[1], reverse=True)
-      neg_src_word_list = [src_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in neg_src_word_list]
+      neg_src_word_list = []
+      if sample2srcsneg is not None:
+        neg_src_word_list = sample2srcsneg[(s, t)] 
+        neg_src_word_list = sorted(neg_src_word_list, key=lambda x:x[1], reverse=True)
+        neg_src_word_list = [src_ind2word[_[0]] + '(' + "%.5f" % _[1] + ')' for _ in neg_src_word_list]
 
       neg_result.append({
         'src': src_ind2word[s],
@@ -53,7 +57,7 @@ def debug_sample_wise_neg(sample2tgtsneg, sample2srcsneg, src_ind2word, trg_ind2
         'hard_neg_src_words': ','.join(neg_src_word_list[:100])
       })
     
-    with open('orig_neg_select_bi_sample.json', 'w') as f:
+    with open('orig_neg_select_new_pipeline.json', 'w') as f:
       json.dump(neg_result, f, indent=2, ensure_ascii=False)
     exit(0)
 
@@ -100,8 +104,8 @@ def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = Tr
     z = Z
   X = copy.deepcopy(X)
   Z = copy.deepcopy(Z)
-  embeddings.normalize(X, ['unit', 'center', 'unit'])
-  embeddings.normalize(Z, ['unit', 'center', 'unit'])
+  #embeddings.normalize(X, ['unit', 'center', 'unit'])
+  #embeddings.normalize(Z, ['unit', 'center', 'unit'])
  
   ret = {}
 
