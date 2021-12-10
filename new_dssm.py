@@ -11,14 +11,14 @@ import random
 import collections
 import pickle
 #from transformers import WarmupLinearSchedule
-
+"""
 def setup_seed(seed):
   torch.manual_seed(seed)
   torch.cuda.manual_seed_all(seed)
   random.seed(seed)
 # 设置随机数种子
 setup_seed(2021)
-
+"""
 class DssmDatasets(Dataset):
     def __init__(self, pos_examples, src2negtgts, tgt2negsrcs=None, vocab_size=30000, 
                 random_neg_per_pos=1000, hard_neg_per_pos=256, hard_neg_random=True):
