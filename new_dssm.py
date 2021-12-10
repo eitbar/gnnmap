@@ -12,42 +12,54 @@ import collections
 import pickle
 #from transformers import WarmupLinearSchedule
 
+def setup_seed(seed):
+  torch.manual_seed(seed)
+  torch.cuda.manual_seed_all(seed)
+  random.seed(seed)
+# 设置随机数种子
+setup_seed(2021)
+
 class DssmDatasets(Dataset):
     def __init__(self, pos_examples, src2negtgts, tgt2negsrcs=None, vocab_size=30000, 
                 random_neg_per_pos=1000, hard_neg_per_pos=256, hard_neg_random=True):
       self.lens = len(pos_examples)
       self.vocab_size = vocab_size
-      self.sample2negtgts = src2negtgts
-      self.sample2negsrcs = tgt2negsrcs
-      self.datas, self.src2gold, self.tgt2gold = self._build_dataset(pos_examples)
+      self.datas, self.src2gold, self.tgt2gold, \
+        self.sample2negtgts, self.sample2negsrcs = self._build_dataset(
+                                                  pos_examples, src2negtgts, tgt2negsrcs)
       self.random_neg_per_pos = random_neg_per_pos
       self.hard_neg_per_pos = hard_neg_per_pos
       self.hard_neg_random = hard_neg_random
       random.seed(2021)
 
-    def _build_dataset(self, pos_examples):
+    def _build_dataset(self, pos_examples, src2negtgts, tgt2negsrcs):
       datas = []
       src2gold = collections.defaultdict(set)
       tgt2gold = collections.defaultdict(set)
-      new_sample2negtgts = collections.defaultdict(set)
-      new_sample2negsrcs = collections.defaultdict(set)
+
+      sample2negtgts = collections.defaultdict(set)
+      sample2negsrcs = collections.defaultdict(set)
+      if tgt2negsrcs is None:
+        sample2negsrcs = None
+      
       # 如果src在sample2negtgts说明是word-wise的
-      is_word_wise = pos_examples[0][0] in self.sample2negtgts
+      # 将word-wise调整为sample-wise，为了之后的处理更加统一
+      is_word_wise = pos_examples[0][0] in src2negtgts 
+      if not is_word_wise:
+        sample2negtgts = src2negtgts
+        sample2negsrcs = tgt2negsrcs
+      else:
+        for pos_src, pos_tgt in pos_examples:
+          sample2negtgts[(pos_src, pos_tgt)] = src2negtgts[pos_src]
+          if tgt2negsrcs is not None:
+            sample2negsrcs[(pos_src, pos_tgt)] = tgt2negsrcs[pos_tgt]
 
       for pos_src, pos_tgt in pos_examples:
         datas.append([pos_src, pos_tgt])
         src2gold[pos_src].add(pos_tgt)
         tgt2gold[pos_tgt].add(pos_src)
-        # 在这里把word-wise改成sample-wise
-        if is_word_wise:
-          new_sample2negtgts[(pos_src, pos_tgt)] = self.sample2negtgts[pos_src]
-          if self.sample2negsrcs is not None:
-            new_sample2negsrcs[(pos_src, pos_tgt)] = self.sample2negsrcs[pos_tgt]
-      if is_word_wise:
-        self.sample2negtgts = new_sample2negtgts
-        if self.sample2negsrcs is not None:
-          self.sample2negsrcs = new_sample2negsrcs
-      return datas, src2gold, tgt2gold
+
+      return datas, src2gold, tgt2gold, sample2negtgts, sample2negsrcs
 
     def __getitem__(self, i):
       # 在getitem的时候随机采样，是为了保证每个epoch采样得到的负例都不相同
@@ -56,7 +68,6 @@ class DssmDatasets(Dataset):
       tgt = orig[1]
       negtgts = list(self.sample2negtgts[(src, tgt)])
       if self.hard_neg_random: 
-        #print(len(negtgts))
         hard_neg_tgts_list = random.sample(negtgts, self.hard_neg_per_pos)
         hard_neg_tgts_set = set(hard_neg_tgts_list)
       else:
@@ -65,7 +76,7 @@ class DssmDatasets(Dataset):
 
       rand_sampling_tgts = random.sample(list(range(self.vocab_size)), self.random_neg_per_pos)
       no_dup_random_tgts = list(set(rand_sampling_tgts) - hard_neg_tgts_set - self.src2gold[src])
-      combi_tgts = rand_sampling_tgts + no_dup_random_tgts
+      combi_tgts = hard_neg_tgts_list + no_dup_random_tgts
 
       # 双向
       combi_srcs = []
@@ -81,7 +92,7 @@ class DssmDatasets(Dataset):
 
         rand_sampling_srcs = random.sample(list(range(self.vocab_size)), self.random_neg_per_pos)
         no_dup_random_srcs = list(set(rand_sampling_srcs) - hard_neg_srcs_set - self.tgt2gold[tgt])
-        combi_srcs = rand_sampling_srcs + no_dup_random_srcs
+        combi_srcs = hard_neg_srcs_list + no_dup_random_srcs
       # 每个item是一个tuple，由两个list组成，第一个是src的list，第二个是tgt的list
       # 正例永远位于list首位
       new_item = ([src] + combi_srcs, [tgt] + combi_tgts)
@@ -255,10 +266,7 @@ class DssmTrainer:
                 tgts_index = tgts_index.to(self.device)
                 labels_index = labels_index.to(self.device)
                 
-                logits_src2tgt, logits_tgt2src = model(src_x, tgt_x, srcs_index, tgts_index)
-                #if e > 30:
-                #  print(logits_src2tgt[0].detach().cpu().numpy().tolist())
-                #  print(logits_tgt2src[0].detach().cpu().numpy().tolist())
+                logits_src2tgt, logits_tgt2src = model(src_x, tgt_x, srcs_index, tgts_index)                  
                 loss1 = loss_func(logits_src2tgt, labels_index)
                 loss2 = 0
                 if srcs_index.shape[1] > 1:
