@@ -213,9 +213,15 @@ class DssmTrainer:
         for param_group in optimizer.param_groups:
           param_group['lr'] = lr
 
-    def _bpr_loss_func(self, logits, labels_index, source="src", rt=None, rs=None):
-        pos_si = logits[:, 0]
-        neg_si = logits[:, 1:]
+    def _bpr_loss_func(self, logits, labels_index, rt, rs, loss_metrics="csls"):
+        
+        if loss_metrics == "csls":
+          new_logits = logits * 2 - rt[:, None] - rs
+        else:
+          new_logits = logits
+        
+        pos_si = new_logits[:, 0]
+        neg_si = new_logits[:, 1:]
         diff = pos_si[:, None] - neg_si
         bpr_loss = - diff.sigmoid().log().mean(1)
         bpr_loss_batch_mean = bpr_loss.mean()
@@ -278,9 +284,17 @@ class DssmTrainer:
         global_step = 0
         total_step = ((len(train_set) + self.train_batch_size - 1) // self.train_batch_size) * self.epochs
         
-
+        rs = torch.zeros(tgt_x.shape[0])
+        rt = torch.zeros(src_x.shape[0])
+        rs = rs.to(self.device)
+        rt = rt.to(self.device)
         for e in range(self.epochs):
             # Forward
+            if torch_orig_xw is not None and torch_orig_zw is not None:
+              rt, rs = self._calc_r_in_csls(torch_orig_xw, torch_orig_zw)
+            else:
+              rt, rs = self._calc_r_in_csls(src_x, tgt_x)
+
             model.train()
             for step, batch in enumerate(train_dataloader):
                 srcs_index, tgts_index, labels_index = batch
@@ -288,11 +302,12 @@ class DssmTrainer:
                 tgts_index = tgts_index.to(self.device)
                 labels_index = labels_index.to(self.device)
                 
-                logits_src2tgt, logits_tgt2src = model(src_x, tgt_x, srcs_index, tgts_index)                  
-                loss1 = loss_func(logits_src2tgt, labels_index)
+                logits_src2tgt, logits_tgt2src = model(src_x, tgt_x, srcs_index, tgts_index)
+
+                loss1 = loss_func(logits_src2tgt, labels_index, rt[srcs_index[:, 0]], rs[tgts_index])
                 loss2 = 0
                 if srcs_index.shape[1] > 1:
-                  loss2 = loss_func(logits_tgt2src, labels_index)
+                  loss2 = loss_func(logits_tgt2src, labels_index, rs[tgts_index[:, 0]], rt[srcs_index])
                   loss = (loss1 + loss2) / 2
                 else:
                   loss = loss1
