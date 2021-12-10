@@ -156,6 +156,12 @@ class GDSSM(nn.Module):
     def _straight_forwoard(self, x):
         return x
 
+    def _get_hidden(self, node_feat, t="src"):
+        if t == "src":
+          return self.src_tower(node_feat)
+        else:
+          return self.tgt_tower(node_feat)
+
     def forward(self, node_feat_src, node_feat_tgt, srcs_index, tgts_index):
         src_h = self.src_tower(node_feat_src)
         tgt_h = self.tgt_tower(node_feat_tgt)
@@ -203,17 +209,30 @@ class DssmTrainer:
         #self.optimizer, warmup_steps=0, t_total=epochs)
 
     def _liner_adjust_lr(self, optimizer, total_step, init_lr, end_lr, now_step):
-      lr = init_lr - (init_lr - end_lr) * ((total_step - now_step) / total_step)
-      for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+        lr = init_lr - (init_lr - end_lr) * ((total_step - now_step) / total_step)
+        for param_group in optimizer.param_groups:
+          param_group['lr'] = lr
 
     def _bpr_loss_func(self, logits, labels_index):
-      pos_si = logits[:, 0]
-      neg_si = logits[:, 1:]
-      diff = pos_si[:, None] - neg_si
-      bpr_loss = - diff.sigmoid().log().mean(1)
-      bpr_loss_batch_mean = bpr_loss.mean()
-      return bpr_loss_batch_mean
+        pos_si = logits[:, 0]
+        neg_si = logits[:, 1:]
+        diff = pos_si[:, None] - neg_si
+        bpr_loss = - diff.sigmoid().log().mean(1)
+        bpr_loss_batch_mean = bpr_loss.mean()
+        return bpr_loss_batch_mean
+
+    def _calc_r_in_csls(self, src_x, tgt_x, knn=10):
+        src_hidden = self.model._get_hidden(src_x)
+        tgt_hidden = self.model._get_hidden(tgt_x)
+        src_hidden = src_hidden.detach()
+        tgt_hidden = tgt_hidden.detach()
+        # size n1 * n2
+        sim_matrix = torch.matmul(src_hidden, tgt_hidden.transpose(0,1))
+        sim_src_topk, _ = torch.topk(sim_matrix, knn, dim=1)
+        rt = torch.mean(sim_src_topk, dim=1)
+        sim_tgt_topk, _ = torch.topk(sim_matrix.transpose(0,1), knn, dim=1)
+        rs = torch.mean(sim_tgt_topk, dim=1)
+        return rt, rs
 
     def fit(self, src_x, tgt_x, train_set, src2negtgts, tgt2negsrcs, val_set, torch_orig_xw=None, torch_orig_zw=None):
         
@@ -305,13 +324,14 @@ class DssmTrainer:
               print(f"best result at epoch {best_epoch}: {best_val_acc}")
               
     def eval(self, src_x, tgt_x, val_src, val_src2tgts):
-
       tgts_result = []
       scores_result = []
       eval_bs = 24
+      rt, rs = self._calc_r_in_csls(src_x, tgt_x, knn=10)
       for i in range(0, len(val_src), eval_bs):
         j = min(i + eval_bs, len(val_src))
         bs_pred_result = self.predict(src_x, tgt_x, val_src[i:j])
+        bs_pred_result = bs_pred_result * 2 - rt[val_src[i:j], None] - rs
         #bs_tgts_result = torch.argsort(bs_pred_result, descending=True, dim=1).cpu().numpy().tolist()
         bs_score_result, bs_tgts_result = torch.sort(bs_pred_result, descending=True, dim=1)
         bs_score_result = bs_score_result.cpu().numpy().tolist()
