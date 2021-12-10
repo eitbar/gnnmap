@@ -213,7 +213,7 @@ class DssmTrainer:
         for param_group in optimizer.param_groups:
           param_group['lr'] = lr
 
-    def _bpr_loss_func(self, logits, labels_index):
+    def _bpr_loss_func(self, logits, labels_index, source="src", rt=None, rs=None):
         pos_si = logits[:, 0]
         neg_si = logits[:, 1:]
         diff = pos_si[:, None] - neg_si
@@ -222,10 +222,13 @@ class DssmTrainer:
         return bpr_loss_batch_mean
 
     def _calc_r_in_csls(self, src_x, tgt_x, knn=10):
-        src_hidden = self.model._get_hidden(src_x)
-        tgt_hidden = self.model._get_hidden(tgt_x)
+        src_hidden = self.model._get_hidden(src_x, "src")
+        tgt_hidden = self.model._get_hidden(tgt_x, "tgt")
         src_hidden = src_hidden.detach()
         tgt_hidden = tgt_hidden.detach()
+
+        src_hidden = F.normalize(src_hidden)
+        tgt_hidden = F.normalize(tgt_hidden)
         # size n1 * n2
         sim_matrix = torch.matmul(src_hidden, tgt_hidden.transpose(0,1))
         sim_src_topk, _ = torch.topk(sim_matrix, knn, dim=1)
