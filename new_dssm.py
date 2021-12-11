@@ -11,14 +11,14 @@ import random
 import collections
 import pickle
 #from transformers import WarmupLinearSchedule
-"""
+
 def setup_seed(seed):
   torch.manual_seed(seed)
   torch.cuda.manual_seed_all(seed)
   random.seed(seed)
 # 设置随机数种子
 setup_seed(2021)
-"""
+
 class DssmDatasets(Dataset):
     def __init__(self, pos_examples, src2negtgts, tgt2negsrcs=None, vocab_size=30000, 
                 random_neg_per_pos=1000, hard_neg_per_pos=256, hard_neg_random=True):
@@ -303,6 +303,10 @@ class DssmTrainer:
                 labels_index = labels_index.to(self.device)
                 
                 logits_src2tgt, logits_tgt2src = model(src_x, tgt_x, srcs_index, tgts_index)
+                if step == 0:
+                  print(srcs_index.cpu()[:, 0].numpy().tolist()[:10])
+                  print(tgts_index.cpu()[:, :10].numpy().tolist()[:10])
+                  print(logits_src2tgt.detach().cpu()[:, :10].numpy().tolist()[:10])
 
                 loss1 = loss_func(logits_src2tgt, labels_index, rt[srcs_index[:, 0]], rs[tgts_index])
                 loss2 = 0

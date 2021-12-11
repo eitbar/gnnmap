@@ -9,6 +9,8 @@ import time
 import torch
 import random
 from new_dssm import DssmTrainer
+from graph_utils import calc_csls_sim
+
 import json
 import copy
 
@@ -53,14 +55,13 @@ def debug_sample_wise_neg(sample2tgtsneg, sample2srcsneg, src_ind2word, trg_ind2
       neg_result.append({
         'src': src_ind2word[s],
         'tgt': trg_ind2word[t],
-        'hard_neg_tgt_words': ','.join(neg_trg_word_list[:100]),
-        'hard_neg_src_words': ','.join(neg_src_word_list[:100])
+        'hard_neg_tgt_words': ','.join(neg_trg_word_list),
+        'hard_neg_src_words': ','.join(neg_src_word_list)
       })
     
-    with open('orig_neg_select_new_pipeline.json', 'w') as f:
+    with open('orig_neg_select_new_pipeline_cos.json', 'w') as f:
       json.dump(neg_result, f, indent=2, ensure_ascii=False)
     exit(0)
-
 
 def debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word):
     x_cos_sim = xw.dot(xw.T)
@@ -92,7 +93,7 @@ def debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word):
     with open('tgt_word2nn.json', 'w') as f:
       json.dump(tgt_word2nn, f, indent=2, ensure_ascii=False)
 
-def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = True):
+def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = True, method="cos"):
   # get Z to the GPU once in the beginning (it can be big, seems like a waste to copy it again for every batch)
   if cuda:
     if not supports_cupy():
@@ -106,7 +107,18 @@ def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = Tr
   Z = copy.deepcopy(Z)
   #embeddings.normalize(X, ['unit', 'center', 'unit'])
   #embeddings.normalize(Z, ['unit', 'center', 'unit'])
- 
+  if method == "csls":
+    torch_X = torch.tensor(X)
+    torch_Z = torch.tensor(Z)
+    sim_matrix = torch.matmul(torch_X, torch_Z.transpose(0,1))
+    sim_src_topk, _ = torch.topk(sim_matrix, 11, dim=1)
+    rt = torch.mean(sim_src_topk[:, 1:], dim=1)
+    sim_tgt_topk, _ = torch.topk(sim_matrix.transpose(0,1), 11, dim=1)
+    rs = torch.mean(sim_tgt_topk[:, 1:], dim=1)
+    rs = xp.asarray(rs.numpy())
+    rt = xp.asarray(rt.numpy())
+    del torch_X, torch_Z
+
   ret = {}
 
   # 按batch size计算NN
@@ -121,7 +133,10 @@ def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = Tr
     if cuda:
      x_batch_slice = xp.asarray(x_batch_slice)
     
-    similarities = x_batch_slice.dot(z.T)
+    if method == "cos":
+      similarities = x_batch_slice.dot(z.T)
+    else:
+      similarities = x_batch_slice.dot(z.T) * 2 - rt[src[i:j], None] - rs     
 
     # 加符号，这样就是从大到小sort了
     nn = (-similarities).argsort(axis=1)
@@ -137,7 +152,7 @@ def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = Tr
   return(ret)   
 
 # method can be "random", "hard" or "mix"
-def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0): 
+def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0, method="cos"): 
   l = len(positive_examples)
   src_word2neg_words = collections.defaultdict(list)
 
@@ -155,8 +170,7 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
   # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
   # nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
   # 找自己语言空间中的最近邻作为hard neg example
-  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True)
-
+  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
   # 为每个pos_src word挑num_neg_per_pos个负例
   for src_ind in correct_mapping:
     # 将src对应的多个tgt word的topk nearest neighbor word index构建集合
@@ -180,7 +194,7 @@ def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_i
 
   return src_word2neg_words, None
 
-def generate_negative_samplewise_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0):
+def generate_negative_samplewise_examples_v2(positive_examples, src_w2ind, tar_w2ind, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0, method="cos"):
   l = len(positive_examples)
   pos_pair2neg_words = collections.defaultdict(list)
 
@@ -194,7 +208,7 @@ def generate_negative_samplewise_examples_v2(positive_examples, src_w2ind, tar_w
 
   # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
   # nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
-  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
   
   # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
   # 将mean(pos_tgt)在tgt语言空间内最近邻作为pos_src的负例
@@ -214,7 +228,7 @@ def generate_negative_samplewise_examples_v2(positive_examples, src_w2ind, tar_w
   return pos_pair2neg_words, None
 
 # method can be "random", "hard" or "mix"
-def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0): 
+def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0, method="cos"): 
   l = len(positive_examples)
   src_word2neg_words = collections.defaultdict(list)
 
@@ -232,8 +246,8 @@ def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_i
   # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
   # nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
 
-  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True)
-  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
+  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
   
   # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
   # 将mean(pos_tgt)在tgt语言空间内最近邻作为pos_src的负例
@@ -275,7 +289,7 @@ def generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_i
 
   return src_word2neg_words, None
 
-def generate_negative_samplewise_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0):
+def generate_negative_samplewise_examples_v3(positive_examples, src_w2ind, tar_w2ind, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0, method="cos"):
   l = len(positive_examples)
   pos_pair2neg_words = collections.defaultdict(list)
 
@@ -290,8 +304,8 @@ def generate_negative_samplewise_examples_v3(positive_examples, src_w2ind, tar_w
   # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
   # nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
 
-  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True)
-  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
+  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
   
   # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
   # 将mean(pos_tgt)在tgt语言空间内最近邻作为pos_src的负例
@@ -337,7 +351,7 @@ def generate_negative_samplewise_examples_v3(positive_examples, src_w2ind, tar_w
 
   return pos_pair2neg_words, None
 
-def generate_negative_examples_v7(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0):
+def generate_negative_examples_v7(positive_examples, src_w2ind, tar_w2ind, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0, method="cos"):
   l = len(positive_examples)
   sample2neg_tgt = collections.defaultdict(list)
   sample2neg_src = collections.defaultdict(list)
@@ -355,8 +369,8 @@ def generate_negative_examples_v7(positive_examples, src_w2ind, tar_w2ind, src_i
   # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
   # nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
 
-  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True)
-  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
+  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
   
   # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
   # 将mean(pos_tgt)在tgt语言空间内最近邻作为pos_src的负例
@@ -388,7 +402,7 @@ def generate_negative_examples_v7(positive_examples, src_w2ind, tar_w2ind, src_i
 
   return sample2neg_tgt, sample2neg_src
 
-def generate_negative_examples_v8(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0):
+def generate_negative_examples_v8(positive_examples, src_w2ind, tar_w2ind, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0, method="cos"):
   l = len(positive_examples)
   sample2neg_tgt = collections.defaultdict(list)
   sample2neg_src = collections.defaultdict(list)
@@ -405,12 +419,11 @@ def generate_negative_examples_v8(positive_examples, src_w2ind, tar_w2ind, src_i
 
   # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
   # nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
-  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True)
-  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
+  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True, method=method)
   
   # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
   # 将mean(pos_tgt)在tgt语言空间内最近邻作为pos_src的负例
-
   # 为每个(pos_src, pos_tgt) pair挑num_neg_per_pos个负例
   for src_ind, tgt_ind in zip(pos_src_word_indexes, pos_tar_word_indexes):
     tgt_nn_wi = tgt_nns[tgt_ind][:top_k]
@@ -463,10 +476,9 @@ def generate_negative_examples_v8(positive_examples, src_w2ind, tar_w2ind, src_i
     exist_neg_src = [_[0] for _ in sample2neg_src[(s, t)]]
     candidate_neg_src_b = sample2neg_src_b[(s, t)] - set(exist_neg_src)
     candidate_neg_src_b = [(w, 0.5) for w in candidate_neg_src_b]
-    sample2neg_src_b[(s, t)].extend(candidate_neg_src_b)
+    sample2neg_src[(s, t)].extend(candidate_neg_src_b)
 
   return sample2neg_tgt, sample2neg_src
-
 
 NEG_SAMPLING_METHOD = {
   'a' : generate_negative_examples_v2,
@@ -615,13 +627,13 @@ def run_dssm_trainning(args):
   src2negtgts, tgt2negsrcs = generate_negative_func(pos_examples, 
                                           src_word2ind, 
                                           trg_word2ind, 
-                                          src_ind2word, 
-                                          trg_ind2word, 
                                           copy.deepcopy(xw), 
                                           copy.deepcopy(zw), 
                                           top_k = neg_top_k, 
                                           num_neg_per_pos = args.hard_neg_per_pos,
-                                          hard_neg_random = args.hard_neg_random)
+                                          hard_neg_random = args.hard_neg_random,
+                                          hard_threshold = args.hard_neg_sampling_threshold,
+                                          method = args.hard_sim_method)
 
 
   if args.use_whitening is not None and args.use_whitening == "post":
@@ -707,10 +719,13 @@ if __name__ == "__main__":
 
   parser.add_argument('--hard_neg_per_pos', type=int, default=256, help='number of hard negative examples')
   parser.add_argument('--hard_neg_sampling_method', type=str, choices=NEG_SAMPLING_METHOD.keys(), default='ab', help='method of neg sampling')
+  parser.add_argument('--hard_neg_sampling_threshold', type=float, default=-1, help='filter low similarity neg word in sampling hard word')
   parser.add_argument('--hard_neg_random', action='store_true', help='random sampling hard in every epoch')
-  
   parser.add_argument('--hard_neg_top_k', type=int, default=500, help='number of topk examples for select hard neg word')
+  parser.add_argument('--hard_sim_method', type=str, default="cos", help='number of topk examples for select hard neg word')
   parser.add_argument('--random_neg_per_pos', type=int, default=256, help='number of random negative examples')
+  
+  
   parser.add_argument('--train_batch_size', type=int, default=256, help='train batch size')
   parser.add_argument('--train_epochs', type=int, default=70, help='train epochs')
   parser.add_argument('--eval_every_epoch', type=int, default=5, help='eval epochs')
