@@ -680,7 +680,8 @@ def run_dssm_trainning(args):
                         model_save_file=args.model_filename,
                         is_single_tower=args.is_single_tower,
                         hard_neg_per_pos=args.hard_neg_per_pos,
-                        hard_neg_random=args.hard_neg_random)
+                        hard_neg_random=args.hard_neg_random,
+                        loss_metric=args.loss_metric)
                         
   model.fit(torch_xw, torch_zw, train_set, src2negtgts, tgt2negsrcs, val_set, torch_orig_xw, torch_orig_zw)
 
@@ -719,7 +720,7 @@ if __name__ == "__main__":
 
   parser.add_argument('--hard_neg_per_pos', type=int, default=256, help='number of hard negative examples')
   parser.add_argument('--hard_neg_sampling_method', type=str, choices=NEG_SAMPLING_METHOD.keys(), default='ab', help='method of neg sampling')
-  parser.add_argument('--hard_neg_sampling_threshold', type=float, default=-1, help='filter low similarity neg word in sampling hard word')
+  parser.add_argument('--hard_neg_sampling_threshold', type=float, default=-10, help='filter low similarity neg word in sampling hard word')
   parser.add_argument('--hard_neg_random', action='store_true', help='random sampling hard in every epoch')
   parser.add_argument('--hard_neg_top_k', type=int, default=500, help='number of topk examples for select hard neg word')
   parser.add_argument('--hard_sim_method', type=str, default="cos", help='number of topk examples for select hard neg word')
@@ -730,6 +731,8 @@ if __name__ == "__main__":
   parser.add_argument('--train_epochs', type=int, default=70, help='train epochs')
   parser.add_argument('--eval_every_epoch', type=int, default=5, help='eval epochs')
   parser.add_argument('--shuffle_in_train', action='store_true', help='use shuffle in train')
+  parser.add_argument('--loss_metric', type=str, default="cos", help='number of topk examples for select hard neg word')
+
 
   
   parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)

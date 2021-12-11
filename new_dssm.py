@@ -189,7 +189,7 @@ class DssmTrainer:
     def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, 
                   device='gpu', epochs=100, eval_every_epoch=5, lr=0.0001, train_batch_size=256,
                   model_save_file='tmp_model.pickle', is_single_tower=False, shuffle_in_train=True,
-                  random_neg_per_pos=256, hard_neg_per_pos=256, hard_neg_random=True):
+                  random_neg_per_pos=256, hard_neg_per_pos=256, hard_neg_random=True, loss_metric="cos"):
         # train config
         self.epochs = epochs
         self.eval_every_epoch = eval_every_epoch
@@ -197,7 +197,8 @@ class DssmTrainer:
         self.random_neg_per_pos = random_neg_per_pos
         self.model_save_file = model_save_file
         self.device = torch.device("cuda" if torch.cuda.is_available() and device == 'gpu' else "cpu")
-        
+        self.loss_metric = loss_metric
+
         self.hard_neg_per_pos = hard_neg_per_pos
         self.hard_neg_random = hard_neg_random
         self.shuffle_in_train = shuffle_in_train
@@ -213,9 +214,9 @@ class DssmTrainer:
         for param_group in optimizer.param_groups:
           param_group['lr'] = lr
 
-    def _bpr_loss_func(self, logits, labels_index, rt, rs, loss_metrics="cos"):
+    def _bpr_loss_func(self, logits, labels_index, rt, rs):
         
-        if loss_metrics == "csls":
+        if self.loss_metric == "csls":
           new_logits = logits * 2 - rt[:, None] - rs
         else:
           new_logits = logits
