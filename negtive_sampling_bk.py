@@ -136,6 +136,46 @@ def get_NN(src, X, Z, num_NN, cuda = False, batch_size = 100, return_scores = Tr
   print("Time taken " + str(time.time() - start_time))
   return(ret)   
 
+def generate_negative_examples_v1(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True): 
+  l = len(positive_examples)
+  src_word2neg_words = collections.defaultdict(list)
+
+  positive_src = [t[0] for t in positive_examples]
+  positive_tar = [t[1] for t in positive_examples]
+
+  pos_src_word_indexes = [src_w2ind[i] for i in positive_src]
+  pos_tar_word_indexes = [tar_w2ind[i] for i in positive_tar]
+  
+  # src_word_ind -> tgt_word_ind 的dict
+  correct_mapping = collections.defaultdict(set)
+  for s, t in zip(pos_src_word_indexes, pos_tar_word_indexes):
+    correct_mapping[s].add(t)
+  #correct_mapping = dict(zip(pos_src_word_indexes, pos_tar_word_indexes))
+
+  # nns maps src word indexes to a list of tuples (tar_index, similarity)
+  # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
+  nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+  for src_ind in nns:
+    # 将src对应的多个tgt word的topk nearest neighbor word index构建集合
+    tgt_nn_wi = nns[src_ind][:top_k]
+    # 去掉groundtruth与重复单词
+    candidate_neg_wi2s = dict()
+    for wi, s in tgt_nn_wi:
+      if wi not in candidate_neg_wi2s and wi not in correct_mapping[src_ind]:
+        candidate_neg_wi2s[wi] = s
+    
+    candidate_neg_wi = sorted(list(candidate_neg_wi2s.items()), key=lambda x:x[1], reverse=True)
+    # 采样num_neg_per_pos个单词
+    if not hard_neg_random:
+      hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
+    else:
+      hard_neg_inds_sample = candidate_neg_wi
+    # 加入采样结果
+    for neg_wi, neg_s in hard_neg_inds_sample: 
+      src_word2neg_words[src_ind].append((neg_wi, neg_s))
+
+  return src_word2neg_words, None
+
 # method can be "random", "hard" or "mix"
 def generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0): 
   l = len(positive_examples)
@@ -337,7 +377,127 @@ def generate_negative_samplewise_examples_v3(positive_examples, src_w2ind, tar_w
 
   return pos_pair2neg_words, None
 
-def generate_negative_examples_v7(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0):
+
+def generate_negative_examples_v4(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True):
+  xp = get_array_module(x)
+  sim_size = min(x.shape[0], z.shape[0])
+  u, s, vt = xp.linalg.svd(x[:sim_size], full_matrices=False)
+  xsim = (u*s).dot(u.T)
+  u, s, vt = xp.linalg.svd(z[:sim_size], full_matrices=False)
+  zsim = (u*s).dot(u.T)
+  del u, s, vt
+  xsim.sort(axis=1)
+  zsim.sort(axis=1)
+  normalize_method = ['unit', 'center', 'unit']
+  embeddings.normalize(xsim, normalize_method)
+  embeddings.normalize(zsim, normalize_method)
+  src_word2neg_words_sim_distri, _ = generate_negative_examples_v1(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, xsim, zsim, top_k, num_neg_per_pos, hard_neg_random)
+  del xsim, zsim
+  src_word2neg_words_neg, _ = generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random)
+  
+  agg_src_word2_neg_words = {}
+  mean_len_list = []
+  for _src in src_word2neg_words_sim_distri:
+    src_word2neg_words_sim_distri[_src] = [(_[0], 0) for _ in src_word2neg_words_sim_distri[_src]]
+    src_word2neg_words_neg[_src] = [(_[0], 0) for _ in src_word2neg_words_neg[_src]]
+    neg_set = list(set(src_word2neg_words_sim_distri[_src] + src_word2neg_words_neg[_src]))
+    agg_src_word2_neg_words[_src] = neg_set
+    mean_len_list.append(len(neg_set))
+  print(sum(mean_len_list) / len(mean_len_list))
+  return agg_src_word2_neg_words, None
+
+def generate_negative_examples_v5(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True):
+  xp = get_array_module(x)
+  sim_size = min(x.shape[0], z.shape[0])
+  u, s, vt = xp.linalg.svd(x[:sim_size], full_matrices=False)
+  xsim = (u*s).dot(u.T)
+  u, s, vt = xp.linalg.svd(z[:sim_size], full_matrices=False)
+  zsim = (u*s).dot(u.T)
+  del u, s, vt
+  xsim.sort(axis=1)
+  zsim.sort(axis=1)
+  normalize_method = ['unit', 'center', 'unit']
+  embeddings.normalize(xsim, normalize_method)
+  embeddings.normalize(zsim, normalize_method)
+  src_word2neg_words_sim_distri, _ = generate_negative_examples_v2(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, xsim, zsim, top_k, num_neg_per_pos, hard_neg_random)
+  del xsim, zsim
+  src_word2neg_words_neg, _ = generate_negative_examples_v3(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random)
+  
+  agg_src_word2_neg_words = {}
+  mean_len_list = []
+  for _src in src_word2neg_words_sim_distri:
+    src_word2neg_words_sim_distri[_src] = [(_[0], 0) for _ in src_word2neg_words_sim_distri[_src]]
+    src_word2neg_words_neg[_src] = [(_[0], 0) for _ in src_word2neg_words_neg[_src]]
+    neg_set = list(set(src_word2neg_words_sim_distri[_src] + src_word2neg_words_neg[_src]))
+    agg_src_word2_neg_words[_src] = neg_set
+    mean_len_list.append(len(neg_set))
+  print(sum(mean_len_list) / len(mean_len_list))
+  return agg_src_word2_neg_words, None
+
+def generate_negative_examples_v6(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True):
+  l = len(positive_examples)
+  pos_pair2neg_words = collections.defaultdict(list)
+
+  pos_src_word_indexes = [src_w2ind[e[0]] for e in positive_examples]
+  pos_tar_word_indexes = [tar_w2ind[e[1]] for e in positive_examples]
+  
+  # src_word_ind -> tgt_word_ind:set 的dict
+  correct_mapping = collections.defaultdict(set)
+  for s, t in zip(pos_src_word_indexes, pos_tar_word_indexes):
+    correct_mapping[s].add(t)
+
+  # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
+  # nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+
+  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True)
+  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True)
+  
+  # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
+  # 将mean(pos_tgt)在tgt语言空间内最近邻作为pos_src的负例
+
+  # 为每个(pos_src, pos_tgt) pair挑num_neg_per_pos个负例
+  neg_examples = []
+  for src_ind, tgt_ind in zip(pos_src_word_indexes, pos_tar_word_indexes):
+    tgt_nn_wi = tgt_nns[tgt_ind][:top_k]
+    # 去掉groundtruth与重复单词
+    candidate_neg_wi = [(w, s) for w, s in tgt_nn_wi if w not in correct_mapping[src_ind]]
+    # 采样num_neg_per_pos个单词
+    if not hard_neg_random:
+      hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
+    else:
+      hard_neg_inds_sample = candidate_neg_wi
+    pos_pair2neg_words[(src_ind, tgt_ind)] = hard_neg_inds_sample
+
+  # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
+  # 取训练集中出现的pos_src的最近邻pos_src_nn1, pos_src_nn2, ...
+  # 将 pos_tgt1, pos_tgt2, ... 作为pos_src_nn1, pos_src_nn2, ...的hard负例
+
+  for pos_src_ind in correct_mapping:
+    # 拿到src的topk nearest neighbor word index集合
+    src_nn_wi = [_[0] for _ in src_nns[pos_src_ind] if _[0] in correct_mapping]
+    tgt_sets = correct_mapping[pos_src_ind]
+    
+    # 待添加负例的训练数据
+    candidate_pos_pair = [(pos_src_nn, _) 
+                          for pos_src_nn in src_nn_wi 
+                          for _ in correct_mapping[pos_src_nn]]
+
+    # 去掉groundtruth与重复负例
+    for s, t in candidate_pos_pair:
+      candidate_neg_wi = tgt_sets
+      # 与 groundth 去重
+      candidate_neg_wi = candidate_neg_wi - correct_mapping[s]
+      # 与 已有负例 去重
+      exist_neg_wi = [_[0] for _ in pos_pair2neg_words[(s, t)]]
+      candidate_neg_wi = candidate_neg_wi - set(exist_neg_wi)
+      
+      # 加入负例
+      candidate_neg_wi = [(_, 0) for _ in candidate_neg_wi]
+      pos_pair2neg_words[(s, t)].extend(candidate_neg_wi)
+
+  return pos_pair2neg_words, None
+
+def generate_negative_examples_v7(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True):
   l = len(positive_examples)
   sample2neg_tgt = collections.defaultdict(list)
   sample2neg_src = collections.defaultdict(list)
@@ -385,85 +545,6 @@ def generate_negative_examples_v7(positive_examples, src_w2ind, tar_w2ind, src_i
     else:
       hard_neg_inds_sample = candidate_neg_wi
     sample2neg_src[(src_ind, tgt_ind)] = hard_neg_inds_sample    
-
-  return sample2neg_tgt, sample2neg_src
-
-def generate_negative_examples_v8(positive_examples, src_w2ind, tar_w2ind, src_ind2w, tar_ind2w, x, z, top_k, num_neg_per_pos, hard_neg_random=True, hard_threshold=0):
-  l = len(positive_examples)
-  sample2neg_tgt = collections.defaultdict(list)
-  sample2neg_src = collections.defaultdict(list)
-
-  pos_src_word_indexes = [src_w2ind[e[0]] for e in positive_examples]
-  pos_tar_word_indexes = [tar_w2ind[e[1]] for e in positive_examples]
-  
-  # src_word_ind -> tgt_word_ind:set 的dict
-  src2groundth = collections.defaultdict(set)
-  tgt2groundth = collections.defaultdict(set)
-  for s, t in zip(pos_src_word_indexes, pos_tar_word_indexes):
-    src2groundth[s].add(t)
-    tgt2groundth[t].add(s)
-
-  # nns是一个dict，src_word_ind -> (tgt_word_ind, sim_score) 的topk list
-  # nns = get_NN(pos_src_word_indexes, x, z, top_k, cuda = True, batch_size = 100, return_scores = True)
-  src_nns = get_NN(list(range(x.shape[0])), x, x, top_k, cuda = True, batch_size = 100, return_scores = True)
-  tgt_nns = get_NN(list(range(z.shape[0])), z, z, top_k, cuda = True, batch_size = 100, return_scores = True)
-  
-  # 对于训练数据中pos_src -> pos_tgt1, pos_tgt2,... 
-  # 将mean(pos_tgt)在tgt语言空间内最近邻作为pos_src的负例
-
-  # 为每个(pos_src, pos_tgt) pair挑num_neg_per_pos个负例
-  for src_ind, tgt_ind in zip(pos_src_word_indexes, pos_tar_word_indexes):
-    tgt_nn_wi = tgt_nns[tgt_ind][:top_k]
-    src_nn_wi = src_nns[src_ind][:top_k]
-
-    # src->tgt方向的负例
-    # 去掉groundtruth与重复单词
-    candidate_neg_wi = [(w, s) for w, s in tgt_nn_wi if w not in src2groundth[src_ind]]
-    # 采样num_neg_per_pos个单词
-    if not hard_neg_random:
-      hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
-    else:
-      hard_neg_inds_sample = candidate_neg_wi
-    sample2neg_tgt[(src_ind, tgt_ind)] = hard_neg_inds_sample
-
-    # tgt->src方向的负例
-    # 去掉groundtruth与重复单词
-    candidate_neg_wi = [(w, s) for w, s in src_nn_wi if w not in tgt2groundth[tgt_ind]]
-    # 采样num_neg_per_pos个单词
-    if not hard_neg_random:
-      hard_neg_inds_sample = random.sample(candidate_neg_wi, num_neg_per_pos)
-    else:
-      hard_neg_inds_sample = candidate_neg_wi
-    sample2neg_src[(src_ind, tgt_ind)] = hard_neg_inds_sample    
-
-
-  sample2neg_tgt_b = collections.defaultdict(set)
-  sample2neg_src_b = collections.defaultdict(set)
-   
-  for src_ind, tgt_ind in sample2neg_tgt:
-    src_nn_wi_in_data = [wi for wi, si in src_nns[src_ind][:top_k] if wi in src2groundth]
-    candidate_sample = [(wi, wi2t) for wi in src_nn_wi_in_data
-                                   for wi2t in src2groundth[wi]]
-    for s, t in candidate_sample:
-      sample2neg_tgt_b[(s, t)].add(tgt_ind)
-
-    tgt_nn_wi_in_data = [wi for wi, si in tgt_nns[tgt_ind][:top_k] if wi in tgt2groundth]
-    candidate_sample = [(wi2s, wi) for wi in tgt_nn_wi_in_data
-                                   for wi2s in tgt2groundth[wi]]    
-    for s, t in candidate_sample:
-      sample2neg_src_b[(s, t)].add(src_ind)
-  
-  # 合并两种方式的负例，去重
-  for src_ind, tgt_ind in sample2neg_tgt:
-    exist_neg_tgt = [_[0] for _ in sample2neg_tgt[(s, t)]]
-    candidate_neg_tgt_b = sample2neg_tgt_b[(s, t)] - set(exist_neg_tgt)
-    candidate_neg_tgt_b = [(w, 0.5) for w in candidate_neg_tgt_b]
-    sample2neg_tgt[(s, t)].extend(candidate_neg_tgt_b)
-
-    exist_neg_src = [_[0] for _ in sample2neg_src[(s, t)]]
-    candidate_neg_src_b = sample2neg_src_b[(s, t)] - set(exist_neg_src)
-    candidate_neg_src_b = [(w, 0.5) for w in candidate_neg_src_b]
-    sample2neg_src_b[(s, t)].extend(candidate_neg_src_b)
 
   return sample2neg_tgt, sample2neg_src
 
@@ -472,255 +553,9 @@ NEG_SAMPLING_METHOD = {
   'a' : generate_negative_examples_v2,
   'samplewise_a' : generate_negative_samplewise_examples_v2,
   'ab' : generate_negative_examples_v3,
-  'samplewise_ab' : generate_negative_samplewise_examples_v3,
-  'bi_samplewise_a': generate_negative_examples_v7,
-  'bi_samplewise_ab' : generate_negative_examples_v8
+  'samplewise_ab' : generate_negative_examples_v6,
+  'abc' : generate_negative_examples_v4,
+  'abd' : generate_negative_examples_v5,
+  'samplewise': generate_negative_examples_v6,
+  'bi_samplewise': generate_negative_examples_v7
 }
-
-
-def whitening_transformation_v1(embedding):
-  xp = get_array_module(embedding)
-  miu = xp.mean(embedding, 0)
-  _embedding = embedding - miu
-  zigma = xp.zeros(shape=(embedding.shape[1], embedding.shape[1]), dtype=embedding.dtype)
-  for i in range(embedding.shape[0]):
-    zigma += _embedding[i][:, None].dot(_embedding[i][None, :])
-  zigma = zigma / embedding.shape[0]
-  u, s, vt = xp.linalg.svd(zigma, full_matrices=True)
-  w = u.dot(xp.sqrt(xp.linalg.inv(xp.diag(s))))
-  new_embedding = _embedding.dot(w)
-  return new_embedding
-
-def whitening_transformation_v2(embedding, seed_index=None):
-  xp = get_array_module(embedding)
-  if seed_index != None:
-    seed_embeddings = embedding[seed_index]
-  else:
-    seed_embeddings = embedding
-  u, s, vt = xp.linalg.svd(seed_embeddings, full_matrices=False)
-  w = vt.T.dot(xp.diag(1/s)).dot(vt)
-  new_embedding = embedding.dot(w)
-  return new_embedding 
-
-def whitening_transformation_v3(embedding):
-  xp = get_array_module(embedding)
-  def compute_kernel_bias(vecs):
-    mu = vecs.mean(axis=0, keepdims=True)
-    cov = xp.cov(vecs.T)
-    u, s, vh = xp.linalg.svd(cov)
-    W = xp.dot(u, xp.diag(1 / xp.sqrt(s)))
-    return W, -mu
-
-  def transform_and_normalize(vecs, kernel, bias):
-    vecs = (vecs + bias).dot(kernel)
-    norms = (vecs**2).sum(axis=1, keepdims=True)**0.5
-    return vecs / xp.clip(norms, 1e-8, xp.inf)
-
-  kernel, bias = compute_kernel_bias(embedding)
-  new_embedding = transform_and_normalize(embedding, kernel, bias)
-  new_embedding = new_embedding.astype(embedding.dtype)
-  return new_embedding
-
-def training_noise_reduction(positive_examples):
-  new_positive_examples = []
-  for s, t in positive_examples:
-    if len(set(t) & set("abcdefghijklmnopqrstuvwxytz")) > 0:
-      continue
-    new_positive_examples.append((s,t))
-  return new_positive_examples
-
-def run_dssm_trainning(args):
-
-  print(args)
-  
-  SL_start_time = time.time()
-
-  # 对于每个src，从tgt单词的cos相似度最高的neg_top_k个单词中随机采样neg_per_pos个
-  neg_top_k = args.hard_neg_top_k
-  debug = args.debug
-
-  # load up the embeddings
-  print("Loading embeddings from disk ...")
-  dtype = "float32"
-  srcfile = open(args.in_src, encoding="utf-8", errors='surrogateescape')
-  trgfile = open(args.in_tar, encoding="utf-8", errors='surrogateescape')
-  src_words, x = embeddings.read(srcfile, 30000, dtype=dtype)
-  trg_words, z = embeddings.read(trgfile, 30000, dtype=dtype)
-
-  # load the supervised dictionary
-  src_word2ind = {word: i for i, word in enumerate(src_words)}
-  trg_word2ind = {word: i for i, word in enumerate(trg_words)}
-  src_ind2word = {i: word for i, word in enumerate(src_words)}
-  trg_ind2word = {i: word for i, word in enumerate(trg_words)}
-
-  # 读入训练集
-  pos_examples = []
-  f = open(args.train_dict, encoding="utf-8", errors='surrogateescape')
-  for line in f:
-      src, trg = [_.lower().strip() for _ in line.split()]
-      if src in src_word2ind and trg in trg_word2ind:
-          pos_examples.append((src,trg))
-
-  val_examples = []
-  f = open(args.val_dict, encoding="utf-8", errors='surrogateescape')
-  for line in f:
-      src, trg = [_.lower().strip() for _ in line.split()]
-      if src in src_word2ind and trg in trg_word2ind:
-          val_examples.append((src,trg))
-
-  train_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in pos_examples] 
-  val_set = [[src_word2ind[_s], trg_word2ind[_t]] for _s, _t in val_examples]
-
-  print("train data size: ", len(pos_examples))
-  print("test data size: ", len(val_examples))
-
-  # pos_examples是word piar的list
-  src_indices = [src_word2ind[t[0]] for t in pos_examples]
-  trg_indices = [trg_word2ind[t[1]] for t in pos_examples]
-
-  print("unique source words in train data: ", len(set(src_indices)))
-
-  val_src_indices = [src_word2ind[t[0]] for t in val_examples]
-  val_trg_indices = [trg_word2ind[t[1]] for t in val_examples] 
-  
-  # 调用vecmap
-  # call artetxe to get the initial alignment on the initial train dict
-  xw, zw = x, z
-
-  embeddings.normalize(xw, ['unit', 'center', 'unit'])
-  embeddings.normalize(zw, ['unit', 'center', 'unit'])
-
-  with torch.no_grad():
-    torch_orig_xw = torch.from_numpy(asnumpy(xw))
-    torch_orig_zw = torch.from_numpy(asnumpy(zw))
-
-  if args.use_whitening is not None and args.use_whitening == "pre":
-    if args.whitening_data == "train":
-      src_indices_for_whitening = sorted(list(set(src_indices))) if args.whitening_sort else src_indices
-      tgt_indices_for_whitening = sorted(list(set(trg_indices))) if args.whitening_sort else trg_indices
-    else:
-      src_indices_for_whitening = None
-      tgt_indices_for_whitening = None
-    xw = whitening_transformation_v2(xw, src_indices_for_whitening)
-    zw = whitening_transformation_v2(zw, tgt_indices_for_whitening)    
-
-
-  # 生成负例,hard neg examples
-  # 返回的是负例word pair的list
-  # generate negative examples for the current
-
-  print("Generating negative examples ...")
-  generate_negative_func = NEG_SAMPLING_METHOD[args.hard_neg_sampling_method]
-  
-  src2negtgts, tgt2negsrcs = generate_negative_func(pos_examples, 
-                                          src_word2ind, 
-                                          trg_word2ind, 
-                                          src_ind2word, 
-                                          trg_ind2word, 
-                                          copy.deepcopy(xw), 
-                                          copy.deepcopy(zw), 
-                                          top_k = neg_top_k, 
-                                          num_neg_per_pos = args.hard_neg_per_pos,
-                                          hard_neg_random = args.hard_neg_random)
-
-
-  if args.use_whitening is not None and args.use_whitening == "post":
-    if args.whitening_data == "train":
-      src_indices_for_whitening = sorted(list(set(src_indices))) if args.whitening_sort else src_indices
-      tgt_indices_for_whitening = sorted(list(set(trg_indices))) if args.whitening_sort else trg_indices
-    else:
-      src_indices_for_whitening = None
-      tgt_indices_for_whitening = None
-    xw = whitening_transformation_v2(xw, src_indices_for_whitening)
-    zw = whitening_transformation_v2(zw, tgt_indices_for_whitening)  
-
-  if debug:
-    # 保存hard neg sample结果用于debug
-    debug_sample_wise_neg(src2negtgts, tgt2negsrcs, src_ind2word, trg_ind2word, train_set)
-  
-  # 去掉score，score是用来debug的
-  for key in src2negtgts:
-    src2negtgts[key] = [_[0] for _ in src2negtgts[key]]
-  if tgt2negsrcs is not None:
-    for key in tgt2negsrcs:
-      tgt2negsrcs[key] = [_[0] for _ in tgt2negsrcs[key]]
-
-  print("Training initial classifier ...")
-
-  if debug:
-    # 保存最近邻用于debug
-    #debug_monolingual_nns(xw, zw, src_ind2word, trg_ind2word)
-    pass
-
-  with torch.no_grad():
-    torch_xw = torch.from_numpy(asnumpy(xw))
-    torch_zw = torch.from_numpy(asnumpy(zw))
-
-  model = DssmTrainer(torch_xw.shape[1], 
-                        torch_zw.shape[1], 
-                        args.h_dim, 
-                        random_neg_per_pos=args.random_neg_per_pos, 
-                        epochs=args.train_epochs,
-                        eval_every_epoch=args.eval_every_epoch,
-                        shuffle_in_train=args.shuffle_in_train,
-                        lr=args.lr,
-                        train_batch_size=args.train_batch_size,
-                        model_save_file=args.model_filename,
-                        is_single_tower=args.is_single_tower,
-                        hard_neg_per_pos=args.hard_neg_per_pos,
-                        hard_neg_random=args.hard_neg_random)
-                        
-  model.fit(torch_xw, torch_zw, train_set, src2negtgts, tgt2negsrcs, val_set, torch_orig_xw, torch_orig_zw)
-
-  print("Writing output to files ...")
-  # write res to disk
-  # 保存xw, zw
-  srcfile = open(args.out_src, mode='w', encoding="utf-8", errors='surrogateescape')
-  trgfile = open(args.out_tar, mode='w', encoding="utf-8", errors='surrogateescape')
-  embeddings.write(src_words, xw, srcfile)
-  embeddings.write(trg_words, zw, trgfile)
-  srcfile.close()
-  trgfile.close()
-  print("SL FINISHED " + str(time.time() - SL_start_time))
-  
-
-if __name__ == "__main__":  
-
-  parser = argparse.ArgumentParser(description='Run classification based self learning for aligning embedding spaces in two languages.')
-
-  parser.add_argument('--train_dict', type=str, help='Name of the input dictionary file.', required = True)
-  parser.add_argument('--val_dict', type=str, help='Name of the input dictionary file.', required = True)
-  parser.add_argument('--in_src', type=str, help='Name of the input source languge embeddings file.', required = True)
-  parser.add_argument('--in_tar', type=str, help='Name of the input target language embeddings file.', required = True)
-  parser.add_argument('--out_src', type=str, help='Name of the output source languge embeddings file.', required = True)
-  parser.add_argument('--out_tar', type=str, help='Name of the output target language embeddings file.', required = True)
-  # parameters
-
-  parser.add_argument('--use_whitening', type=str, choices=["pre", "post", None], default=None, help='use whitening transformation before neg sampling as preprocess') 
-  parser.add_argument('--whitening_data', type=str, choices=["train", "all"], default="train", help='use whitening transformation before neg sampling as preprocess') 
-  parser.add_argument('--whitening_sort', action='store_true', help='sort whitening data')
-
-  # model related para
-  parser.add_argument('--is_single_tower', action='store_true', help='use single tower')
-  parser.add_argument('--h_dim', type=int, default=300, help='hidden states dim in GNN')
-  parser.add_argument('--lr', type=float, default=0.0001, help='learning rate')
-
-  parser.add_argument('--hard_neg_per_pos', type=int, default=256, help='number of hard negative examples')
-  parser.add_argument('--hard_neg_sampling_method', type=str, choices=NEG_SAMPLING_METHOD.keys(), default='ab', help='method of neg sampling')
-  parser.add_argument('--hard_neg_random', action='store_true', help='random sampling hard in every epoch')
-  
-  parser.add_argument('--hard_neg_top_k', type=int, default=500, help='number of topk examples for select hard neg word')
-  parser.add_argument('--random_neg_per_pos', type=int, default=256, help='number of random negative examples')
-  parser.add_argument('--train_batch_size', type=int, default=256, help='train batch size')
-  parser.add_argument('--train_epochs', type=int, default=70, help='train epochs')
-  parser.add_argument('--eval_every_epoch', type=int, default=5, help='eval epochs')
-  parser.add_argument('--shuffle_in_train', action='store_true', help='use shuffle in train')
-
-  
-  parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)
-  parser.add_argument('--debug', action='store_true', help='store debug info')
-
-  args = parser.parse_args()
-
-  run_dssm_trainning(args)
-

@@ -213,7 +213,7 @@ class DssmTrainer:
         for param_group in optimizer.param_groups:
           param_group['lr'] = lr
 
-    def _bpr_loss_func(self, logits, labels_index, rt, rs, loss_metrics="csls"):
+    def _bpr_loss_func(self, logits, labels_index, rt, rs, loss_metrics="cos"):
         
         if loss_metrics == "csls":
           new_logits = logits * 2 - rt[:, None] - rs
