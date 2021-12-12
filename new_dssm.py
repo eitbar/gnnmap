@@ -19,6 +19,11 @@ def setup_seed(seed):
 # 设置随机数种子
 setup_seed(2021)
 
+def get_rand_list_with_p(a, size, p):
+  p = np.array(p) / np.sum(p)
+  sample_list = np.random.choice(a, size, False, p)
+  return sample_list.tolist()
+
 class DssmDatasets(Dataset):
     def __init__(self, pos_examples, src2negtgts, tgt2negsrcs=None, vocab_size=30000, 
                 random_neg_per_pos=1000, hard_neg_per_pos=256, hard_neg_random=True):
@@ -67,8 +72,17 @@ class DssmDatasets(Dataset):
       src = orig[0]
       tgt = orig[1]
       negtgts = list(self.sample2negtgts[(src, tgt)])
-      if self.hard_neg_random: 
-        hard_neg_tgts_list = random.sample(negtgts, min(self.hard_neg_per_pos, len(negtgts)))
+      negtgts_prob = None
+      # 有给定的概率，按照给定概率采样
+      if len(negtgts[0]) > 1:
+        negtgts_prob = [_[1] for _ in negtgts]
+        negtgts = [_[0] for _ in negtgts]
+
+      if self.hard_neg_random:
+        if negtgts_prob is not None:
+          hard_neg_tgts_list = get_rand_list_with_p(negtgts, min(self.hard_neg_per_pos, len(negtgts)), negtgts_prob)
+        else:
+          hard_neg_tgts_list = random.sample(negtgts, min(self.hard_neg_per_pos, len(negtgts)))
         hard_neg_tgts_set = set(hard_neg_tgts_list)
       else:
         hard_neg_tgts_list = negtgts
@@ -82,9 +96,15 @@ class DssmDatasets(Dataset):
       combi_srcs = []
       if self.sample2negsrcs is not None:
         negsrcs = list(self.sample2negsrcs[(src, tgt)])
+        if len(negsrcs[0]) > 1:
+          negsrcs_prob = [_[1] for _ in negsrcs]
+          negsrcs = [_[0] for _ in negsrcs]        
         if self.hard_neg_random: 
           #print(len(orig[2:]))
-          hard_neg_srcs_list = random.sample(negsrcs, min(self.hard_neg_per_pos, len(negsrcs)))
+          if negsrcs_prob is not None:
+            hard_neg_srcs_list = get_rand_list_with_p(negsrcs, min(self.hard_neg_per_pos, len(negsrcs)), negsrcs_prob)
+          else:
+            hard_neg_srcs_list = random.sample(negsrcs, min(self.hard_neg_per_pos, len(negsrcs)))
           hard_neg_srcs_set = set(hard_neg_srcs_list)
         else:
           hard_neg_srcs_list = negsrcs

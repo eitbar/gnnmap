@@ -651,11 +651,12 @@ def run_dssm_trainning(args):
     debug_sample_wise_neg(src2negtgts, tgt2negsrcs, src_ind2word, trg_ind2word, train_set)
   
   # 去掉score，score是用来debug的
-  for key in src2negtgts:
-    src2negtgts[key] = [_[0] for _ in src2negtgts[key]]
-  if tgt2negsrcs is not None:
-    for key in tgt2negsrcs:
-      tgt2negsrcs[key] = [_[0] for _ in tgt2negsrcs[key]]
+  if not args.hard_neg_random_with_prob:
+    for key in src2negtgts:
+      src2negtgts[key] = [_[0] for _ in src2negtgts[key]]
+    if tgt2negsrcs is not None:
+      for key in tgt2negsrcs:
+        tgt2negsrcs[key] = [_[0] for _ in tgt2negsrcs[key]]
 
   print("Training initial classifier ...")
 
@@ -724,7 +725,9 @@ if __name__ == "__main__":
   parser.add_argument('--hard_neg_random', action='store_true', help='random sampling hard in every epoch')
   parser.add_argument('--hard_neg_top_k', type=int, default=500, help='number of topk examples for select hard neg word')
   parser.add_argument('--hard_sim_method', type=str, default="cos", help='number of topk examples for select hard neg word')
+  parser.add_argument('--hard_neg_random_with_prob', action='store_true', help='random sampling hard in every epoch')
   parser.add_argument('--random_neg_per_pos', type=int, default=256, help='number of random negative examples')
+
   
   
   parser.add_argument('--train_batch_size', type=int, default=256, help='train batch size')
