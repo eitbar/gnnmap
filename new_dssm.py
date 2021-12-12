@@ -96,7 +96,7 @@ class DssmDatasets(Dataset):
       combi_srcs = []
       if self.sample2negsrcs is not None:
         negsrcs = list(self.sample2negsrcs[(src, tgt)])
-        if not isinstance(negtgts[0], int):
+        if not isinstance(negsrcs[0], int):
           negsrcs_prob = [_[1] for _ in negsrcs]
           negsrcs = [_[0] for _ in negsrcs]        
         if self.hard_neg_random: 
