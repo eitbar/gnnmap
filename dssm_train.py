@@ -541,7 +541,7 @@ def training_noise_reduction(positive_examples):
     new_positive_examples.append((s,t))
   return new_positive_examples
 
-def run_dssm_trainning(args):
+def run_dssm_trainning(args, is_optuna=False):
 
   print(args)
   
@@ -686,6 +686,8 @@ def run_dssm_trainning(args):
                         
   model.fit(torch_xw, torch_zw, train_set, src2negtgts, tgt2negsrcs, val_set, torch_orig_xw, torch_orig_zw)
 
+  if is_optuna:
+    return model.best_val_acc
   print("Writing output to files ...")
   # write res to disk
   # 保存xw, zw

@@ -365,6 +365,7 @@ class DssmTrainer:
                 best_epoch = e
 
               print(f"best result at epoch {best_epoch}: {best_val_acc}")
+        self.best_val_acc = best_val_acc
               
     def eval(self, src_x, tgt_x, val_src, val_src2tgts):
       tgts_result = []
