@@ -17,7 +17,7 @@ def setup_seed(seed):
   torch.cuda.manual_seed_all(seed)
   random.seed(seed)
 # 设置随机数种子
-setup_seed(2021)
+setup_seed(1735)
 
 def get_rand_list_with_p(a, size, p):
   p = np.array(p) / np.sum(p)
@@ -74,7 +74,7 @@ class DssmDatasets(Dataset):
       negtgts = list(self.sample2negtgts[(src, tgt)])
       negtgts_prob = None
       # 有给定的概率，按照给定概率采样
-      if len(negtgts[0]) > 1:
+      if not isinstance(negtgts[0], int):
         negtgts_prob = [_[1] for _ in negtgts]
         negtgts = [_[0] for _ in negtgts]
 
@@ -96,7 +96,7 @@ class DssmDatasets(Dataset):
       combi_srcs = []
       if self.sample2negsrcs is not None:
         negsrcs = list(self.sample2negsrcs[(src, tgt)])
-        if len(negsrcs[0]) > 1:
+        if not isinstance(negtgts[0], int):
           negsrcs_prob = [_[1] for _ in negsrcs]
           negsrcs = [_[0] for _ in negsrcs]        
         if self.hard_neg_random: 
