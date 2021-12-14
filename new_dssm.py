@@ -20,7 +20,8 @@ def setup_seed(seed):
 setup_seed(1735)
 
 def get_rand_list_with_p(a, size, p):
-  p = np.array(p) / np.sum(p)
+  p = 1/(1+np.exp(-np.array(p)))
+  p = p / np.sum(p)
   sample_list = np.random.choice(a, size, False, p)
   return sample_list.tolist()
 
@@ -73,20 +74,24 @@ class DssmDatasets(Dataset):
       tgt = orig[1]
       negtgts = list(self.sample2negtgts[(src, tgt)])
       negtgts_prob = None
-      # 有给定的概率，按照给定概率采样
-      if not isinstance(negtgts[0], int):
-        negtgts_prob = [_[1] for _ in negtgts]
-        negtgts = [_[0] for _ in negtgts]
+      if len(negtgts) > 0:
+        # 有给定的概率，按照给定概率采样
+        if not isinstance(negtgts[0], int):
+          negtgts_prob = [_[1] for _ in negtgts]
+          negtgts = [_[0] for _ in negtgts]
 
-      if self.hard_neg_random:
-        if negtgts_prob is not None:
-          hard_neg_tgts_list = get_rand_list_with_p(negtgts, min(self.hard_neg_per_pos, len(negtgts)), negtgts_prob)
+        if self.hard_neg_random:
+          if negtgts_prob is not None:
+            hard_neg_tgts_list = get_rand_list_with_p(negtgts, min(self.hard_neg_per_pos, len(negtgts)), negtgts_prob)
+          else:
+            hard_neg_tgts_list = random.sample(negtgts, min(self.hard_neg_per_pos, len(negtgts)))
+          hard_neg_tgts_set = set(hard_neg_tgts_list)
         else:
-          hard_neg_tgts_list = random.sample(negtgts, min(self.hard_neg_per_pos, len(negtgts)))
-        hard_neg_tgts_set = set(hard_neg_tgts_list)
+          hard_neg_tgts_list = negtgts
+          hard_neg_tgts_set = set(hard_neg_tgts_list)
       else:
-        hard_neg_tgts_list = negtgts
-        hard_neg_tgts_set = set(hard_neg_tgts_list)
+        hard_neg_tgts_list = []
+        hard_neg_tgts_set = set()
 
       rand_sampling_tgts = random.sample(list(range(self.vocab_size)), self.random_neg_per_pos)
       no_dup_random_tgts = list(set(rand_sampling_tgts) - hard_neg_tgts_set - self.src2gold[src])
@@ -96,19 +101,24 @@ class DssmDatasets(Dataset):
       combi_srcs = []
       if self.sample2negsrcs is not None:
         negsrcs = list(self.sample2negsrcs[(src, tgt)])
-        if not isinstance(negsrcs[0], int):
-          negsrcs_prob = [_[1] for _ in negsrcs]
-          negsrcs = [_[0] for _ in negsrcs]        
-        if self.hard_neg_random: 
-          #print(len(orig[2:]))
-          if negsrcs_prob is not None:
-            hard_neg_srcs_list = get_rand_list_with_p(negsrcs, min(self.hard_neg_per_pos, len(negsrcs)), negsrcs_prob)
+        if len(negsrcs) > 0:
+          negsrcs_prob = None
+          if not isinstance(negsrcs[0], int):
+            negsrcs_prob = [_[1] for _ in negsrcs]
+            negsrcs = [_[0] for _ in negsrcs]        
+          if self.hard_neg_random: 
+            #print(len(orig[2:]))
+            if negsrcs_prob is not None:
+              hard_neg_srcs_list = get_rand_list_with_p(negsrcs, min(self.hard_neg_per_pos, len(negsrcs)), negsrcs_prob)
+            else:
+              hard_neg_srcs_list = random.sample(negsrcs, min(self.hard_neg_per_pos, len(negsrcs)))
+            hard_neg_srcs_set = set(hard_neg_srcs_list)
           else:
-            hard_neg_srcs_list = random.sample(negsrcs, min(self.hard_neg_per_pos, len(negsrcs)))
-          hard_neg_srcs_set = set(hard_neg_srcs_list)
+            hard_neg_srcs_list = negsrcs
+            hard_neg_srcs_set = set(hard_neg_srcs_list)
         else:
-          hard_neg_srcs_list = negsrcs
-          hard_neg_srcs_set = set(hard_neg_srcs_list)
+          hard_neg_srcs_list = []
+          hard_neg_srcs_set = set()
 
         rand_sampling_srcs = random.sample(list(range(self.vocab_size)), self.random_neg_per_pos)
         no_dup_random_srcs = list(set(rand_sampling_srcs) - hard_neg_srcs_set - self.tgt2gold[tgt])

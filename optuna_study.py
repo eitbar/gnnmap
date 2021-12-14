@@ -1,18 +1,17 @@
 import optuna
 import argparse
-from dssm_train import run_dssm_trainning
-
+from dssm_train import run_dssm_trainning, NEG_SAMPLING_METHOD
 
 def objective(trial):
 
   parser = argparse.ArgumentParser(description='Run classification based self learning for aligning embedding spaces in two languages.')
 
-  parser.add_argument('--train_dict', type=str, help='Name of the input dictionary file.', required = True)
-  parser.add_argument('--val_dict', type=str, help='Name of the input dictionary file.', required = True)
-  parser.add_argument('--in_src', type=str, help='Name of the input source languge embeddings file.', required = True)
-  parser.add_argument('--in_tar', type=str, help='Name of the input target language embeddings file.', required = True)
-  parser.add_argument('--out_src', type=str, help='Name of the output source languge embeddings file.', required = True)
-  parser.add_argument('--out_tar', type=str, help='Name of the output target language embeddings file.', required = True)
+  parser.add_argument('--train_dict', type=str, help='Name of the input dictionary file.')
+  parser.add_argument('--val_dict', type=str, help='Name of the input dictionary file.')
+  parser.add_argument('--in_src', type=str, help='Name of the input source languge embeddings file.')
+  parser.add_argument('--in_tar', type=str, help='Name of the input target language embeddings file.')
+  parser.add_argument('--out_src', type=str, help='Name of the output source languge embeddings file.')
+  parser.add_argument('--out_tar', type=str, help='Name of the output target language embeddings file.')
   # parameters
 
   parser.add_argument('--use_whitening', type=str, choices=["pre", "post", None], default=None, help='use whitening transformation before neg sampling as preprocess') 
@@ -43,7 +42,7 @@ def objective(trial):
 
 
   
-  parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)
+  parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..')
   parser.add_argument('--debug', action='store_true', help='store debug info')
 
   args = parser.parse_args()
@@ -51,7 +50,7 @@ def objective(trial):
   args.train_dict = "./data/en-zh/en-zh.0-5000.txt"
   args.val_dict = "./data/en-zh/en-zh.5000-6500.txt" 
   args.in_src = "./data/en-zh/wiki.10k.en.vec" 
-  args.in_tgt = "./data/en-zh/wiki.10k.zh.vec" 
+  args.in_tar = "./data/en-zh/wiki.10k.zh.vec" 
   args.out_src = "./data/en-zh/en.whitening.tmp.vec"
   args.out_tar = "./data/en-zh/zh.whitening.tmp.vec"
   args.model_filename = "./data/en-zh/ENZH-model.tmp.pickle"
@@ -67,18 +66,18 @@ def objective(trial):
   args.whitening_data = trial.suggest_categorical(name="whitening_data", choices=["train", "all"])
   
   args.hard_neg_top_k = trial.suggest_int(name="hard_neg_top_k", low=100, high=1000, step=100)
-  args.random_neg_per_pos = trial.suggest_int(name="random_neg_per_pos", low=64, high=args.hard_neg_top_k, step=64)
-  args.hard_neg_random = trial.suggest_categorical(name="hard_neg_random", choices=[True, False])
+  args.random_neg_per_pos = trial.suggest_int(name="random_neg_per_pos", low=64, high=256, step=64)
+  args.hard_neg_random = True
   args.hard_neg_random_with_prob = trial.suggest_categorical(name="hard_neg_random_with_prob", choices=[True, False])
-  args.hard_sim_method = trial.suggest_categorical(name="hard_sim_method", choices=["cos", "csls"])
+  args.hard_sim_method = "cos"
 
-  args.h_dim = trial.suggest_int(name="h_dim", low=150, high=400, step=50)
+  args.h_dim = trial.suggest_int(name="h_dim", low=150, high=300, step=50)
   args.lr = trial.suggest_categorical(name="lr", choices=[0.0001, 0.0003, 0.0007, 0.001, 0.002, 0.003])
   
   args.hard_neg_sampling_method = trial.suggest_categorical(name="hard_neg_sampling_method", 
                                         choices=["a", "samplewise_a", "ab", "samplewise_ab", "bi_samplewise_a", "bi_samplewise_ab"])
 
-  args.hard_neg_sampling_threshold = trial.suggest_uniform("hard_neg_sampling_threshold", -1, 1)
+  args.hard_neg_sampling_threshold = trial.suggest_uniform("hard_neg_sampling_threshold", -1, 0.9)
   
   
   score = run_dssm_trainning(args, is_optuna=True)
@@ -88,10 +87,10 @@ def objective(trial):
 
 study = optuna.create_study(pruner=optuna.pruners.MedianPruner(n_warmup_steps=10), 
                             direction="maximize",
-                            study_name='example', 
-                            storage='sqlite:///example.db')
+                            study_name='bli7', 
+                            storage='sqlite:///bli7.db')
 
-study.optimize(objective, n_trials=100)
+study.optimize(objective, n_trials=10)
 
 print("Number of finished trials: {}".format(len(study.trials)))
 print("Best trial:")

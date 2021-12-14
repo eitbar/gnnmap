@@ -9,7 +9,6 @@ import time
 import torch
 import random
 from new_dssm import DssmTrainer
-from graph_utils import calc_csls_sim
 
 import json
 import copy
