@@ -554,7 +554,7 @@ def training_noise_reduction(positive_examples):
 def run_dssm_trainning(args, is_optuna=False):
 
   print(args)
-  
+  set_seed(args.random_seed)
   SL_start_time = time.time()
 
   # 对于每个src，从tgt单词的cos相似度最高的neg_top_k个单词中随机采样neg_per_pos个
@@ -756,7 +756,6 @@ if __name__ == "__main__":
   parser.add_argument('--random_seed', type=int, default=2021, help='random seed')
 
   args = parser.parse_args()
-  set_seed(args.random_seed)
 
   run_dssm_trainning(args)
 
