@@ -678,7 +678,8 @@ def run_dssm_trainning(args, is_optuna=False):
   with torch.no_grad():
     torch_xw = torch.from_numpy(asnumpy(xw))
     torch_zw = torch.from_numpy(asnumpy(zw))
-
+  if is_optuna:
+    args.model_filename = None
   model = DssmTrainer(torch_xw.shape[1], 
                         torch_zw.shape[1], 
                         args.h_dim, 

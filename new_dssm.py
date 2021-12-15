@@ -12,12 +12,6 @@ import collections
 import pickle
 #from transformers import WarmupLinearSchedule
 
-def setup_seed(seed):
-  torch.manual_seed(seed)
-  torch.cuda.manual_seed_all(seed)
-  random.seed(seed)
-# 设置随机数种子
-setup_seed(1735)
 
 def get_rand_list_with_p(a, size, p):
   p = 1/(1+np.exp(-np.array(p)))
@@ -334,10 +328,11 @@ class DssmTrainer:
                 labels_index = labels_index.to(self.device)
                 
                 logits_src2tgt, logits_tgt2src = model(src_x, tgt_x, srcs_index, tgts_index)
+
                 if step == 0:
-                  print(srcs_index.cpu()[:, 0].numpy().tolist()[:10])
-                  print(tgts_index.cpu()[:, :10].numpy().tolist()[:10])
-                  print(logits_src2tgt.detach().cpu()[:, :10].numpy().tolist()[:10])
+                  print(srcs_index.cpu()[:, 0].numpy().tolist()[:5])
+                  print(tgts_index.cpu()[:, :5].numpy().tolist()[:5])
+                  print(logits_src2tgt.detach().cpu()[:, :5].numpy().tolist()[:5])
 
                 loss1 = loss_func(logits_src2tgt, labels_index, rt[srcs_index[:, 0]], rs[tgts_index])
                 loss2 = 0
@@ -434,5 +429,8 @@ class DssmTrainer:
 
     def save(self):
       print("Saving the best model to disk ...")
-      with open("./" + self.model_save_file, "wb") as outfile:
-        pickle.dump(self, outfile)
+      if self.model_save_file is None:
+        print("Save failed for model_save_file para is None !!!!")
+      else:
+        with open("./" + self.model_save_file, "wb") as outfile:
+          pickle.dump(self, outfile)
