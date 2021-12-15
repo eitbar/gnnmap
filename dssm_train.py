@@ -13,6 +13,17 @@ from new_dssm import DssmTrainer
 import json
 import copy
 
+def set_seed(seed):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    if supports_cupy():
+        xp = get_cupy()
+        xp.random.seed(seed)
+
 def debug_neg_sampling_record(src_w2negs, src_ind2word, trg_ind2word, train_set):
     # 保存hard neg sample结果用于debug
     neg_result = []
@@ -741,8 +752,10 @@ if __name__ == "__main__":
   
   parser.add_argument('--model_filename', type=str, help='Name of file where the model will be stored..', required = True)
   parser.add_argument('--debug', action='store_true', help='store debug info')
+  parser.add_argument('--random_seed', type=int, default=2021, help='random seed')
 
   args = parser.parse_args()
+  set_seed(args.random_seed)
 
   run_dssm_trainning(args)
 
