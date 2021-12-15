@@ -1,1 +1,1 @@
-CUDA_VISIBLE_DEVICES=0 python optuna_study.py
+CUDA_VISIBLE_DEVICES=2 python optuna_study.py

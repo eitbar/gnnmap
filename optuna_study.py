@@ -93,10 +93,10 @@ def objective(trial):
 
 study = optuna.create_study(pruner=optuna.pruners.MedianPruner(n_warmup_steps=10), 
                             direction="maximize",
-                            study_name='bli7', 
-                            storage='sqlite:///bli7.db')
+                            study_name='bli9', 
+                            storage='sqlite:///bli9.db')
 
-study.optimize(objective, n_trials=10)
+study.optimize(objective, n_trials=20)
 
 print("Number of finished trials: {}".format(len(study.trials)))
 print("Best trial:")
