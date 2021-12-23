@@ -147,6 +147,32 @@ class DssmDatasets(Dataset):
       labels_list = torch.tensor(labels_list, dtype=torch.long)
       return srcs_list_index, tgts_list_index, labels_list
 
+    def update_hard_neg(self, similarity_x2y, similarity_y2x=None):
+      neg_candi_size = max([len(_) + 3 for _ in self.sample2negtgts.values()])
+      src2hard_neg_candi = {}
+      _, index_x2y = torch.sort(similarity_x2y, descending=True, dim=1)
+      index_x2y = index_x2y.cpu().numpy().tolist()
+      for src in self.src2gold:
+        neg_candi = index_x2y[src][:neg_candi_size]
+        neg_candi = [_ for _ in neg_candi if _ not in self.src2gold[src]]
+        src2hard_neg_candi[src] = neg_candi
+      for (pos_src, pos_tgt) in self.datas:
+        self.sample2negtgts[(pos_src, pos_tgt)] = src2hard_neg_candi[pos_src]
+      if self.sample2negsrcs is not None and similarity_y2x is not None:
+        _, index_y2x = torch.sort(similarity_y2x, descending=True, dim=1)
+        index_y2x = index_y2x.cpu().numpy().tolist()
+        tgt2hard_neg_candi = {}
+        for tgt in self.tgt2gold:
+          neg_candi = index_y2x[tgt][:neg_candi_size]
+          neg_candi = [_ for _ in neg_candi if _ not in self.tgt2gold[tgt]]
+          tgt2hard_neg_candi[tgt] = neg_candi
+        for (pos_src, pos_tgt) in self.datas:
+          self.sample2negsrcs[(pos_src, pos_tgt)] = tgt2hard_neg_candi[pos_tgt]
+              
+
+
+
+
 class HouseholderTower(nn.Module):
     # XH
     def __init__(self, in_feat_dim, hhr_number):
@@ -213,7 +239,8 @@ class DssmTrainer:
     def __init__(self, src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, 
                   device='gpu', epochs=100, eval_every_epoch=5, lr=0.0001, train_batch_size=256,
                   model_save_file='tmp_model.pickle', is_single_tower=False, shuffle_in_train=True,
-                  random_neg_per_pos=256, hard_neg_per_pos=256, hard_neg_random=True, loss_metric="cos"):
+                  random_neg_per_pos=256, hard_neg_per_pos=256, hard_neg_random=True, 
+                  update_neg_every_epoch=1, loss_metric="cos"):
         # train config
         self.epochs = epochs
         self.eval_every_epoch = eval_every_epoch
@@ -226,12 +253,14 @@ class DssmTrainer:
         self.hard_neg_per_pos = hard_neg_per_pos
         self.hard_neg_random = hard_neg_random
         self.shuffle_in_train = shuffle_in_train
+        self.update_neg_every_epoch = update_neg_every_epoch
         # model config
         self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, is_single_tower)
         #self.loss_func = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         #self.scheduler = WarmupLinearSchedule(
-        #self.optimizer, warmup_steps=0, t_total=epochs)
+        #self.optimizer, warmup_steps=0, t_total=epochs
+        #)
 
     def _liner_adjust_lr(self, optimizer, total_step, init_lr, end_lr, now_step):
         lr = init_lr - (init_lr - end_lr) * ((total_step - now_step) / total_step)
@@ -266,7 +295,7 @@ class DssmTrainer:
         rt = torch.mean(sim_src_topk, dim=1)
         sim_tgt_topk, _ = torch.topk(sim_matrix.transpose(0,1), knn, dim=1)
         rs = torch.mean(sim_tgt_topk, dim=1)
-        return rt, rs
+        return rt, rs, sim_matrix
 
     def fit(self, src_x, tgt_x, train_set, src2negtgts, tgt2negsrcs, val_set, torch_orig_xw=None, torch_orig_zw=None):
         
@@ -301,7 +330,7 @@ class DssmTrainer:
         optimizer = self.optimizer
         loss_func = self._bpr_loss_func
         #loss_func = self.loss_func
-        #scheduler = self.scheduler 
+        #scheduler = self.scheduler
 
         best_val_acc = [0, 0, 0, 0, 0]
         save_best_acc = [0, 0, 0, 0, 0]
@@ -314,69 +343,83 @@ class DssmTrainer:
         rs = rs.to(self.device)
         rt = rt.to(self.device)
         for e in range(self.epochs):
-            # Forward
-            if torch_orig_xw is not None and torch_orig_zw is not None:
-              rt, rs = self._calc_r_in_csls(torch_orig_xw, torch_orig_zw)
+          # Forward
+          if torch_orig_xw is not None and torch_orig_zw is not None:
+            rt, rs, sim = self._calc_r_in_csls(torch_orig_xw, torch_orig_zw)
+          else:
+            rt, rs, sim = self._calc_r_in_csls(src_x, tgt_x)
+
+          if self.update_neg_every_epoch > 0 and e % self.update_neg_every_epoch == 0:
+            if self.loss_metric == "cos":
+              sim_x2y = sim
+              sim_y2x = sim.transpose(0, 1)
             else:
-              rt, rs = self._calc_r_in_csls(src_x, tgt_x)
+              sim_x2y = sim * 2 - rt[:, None] - rs
+              sim_y2x = sim.transpose(0, 1) - rs[:, None] - rt            
+            print(train_dataset.sample2negtgts[tuple(train_dataset.datas[0])][:50])
+            print(train_dataset.sample2negtgts[tuple(train_dataset.datas[1])][:50])
+            print(len(train_dataset.sample2negtgts[tuple(train_dataset.datas[2])]))
+            train_dataset.update_hard_neg(sim_x2y, sim_y2x)
+            print(train_dataset.sample2negtgts[tuple(train_dataset.datas[0])][:50])
+            print(train_dataset.sample2negtgts[tuple(train_dataset.datas[1])][:50])
+            print(len(train_dataset.sample2negtgts[tuple(train_dataset.datas[2])]))
 
-            model.train()
-            for step, batch in enumerate(train_dataloader):
-                srcs_index, tgts_index, labels_index = batch
-                srcs_index = srcs_index.to(self.device)
-                tgts_index = tgts_index.to(self.device)
-                labels_index = labels_index.to(self.device)
-                
-                logits_src2tgt, logits_tgt2src = model(src_x, tgt_x, srcs_index, tgts_index)
+          model.train()
+          for step, batch in enumerate(train_dataloader):
+            srcs_index, tgts_index, labels_index = batch
+            srcs_index = srcs_index.to(self.device)
+            tgts_index = tgts_index.to(self.device)
+            labels_index = labels_index.to(self.device)
+            
+            logits_src2tgt, logits_tgt2src = model(src_x, tgt_x, srcs_index, tgts_index)
 
-                if step == 0:
-                  print(srcs_index.cpu()[:, 0].numpy().tolist()[:5])
-                  print(tgts_index.cpu()[:, :5].numpy().tolist()[:5])
-                  print(logits_src2tgt.detach().cpu()[:, :5].numpy().tolist()[:5])
+            if step == 0:
+              print(srcs_index.cpu()[:, 0].numpy().tolist()[:5])
+              print(tgts_index.cpu()[:, :5].numpy().tolist()[:5])
+              print(logits_src2tgt.detach().cpu()[:, :5].numpy().tolist()[:5])
 
-                loss1 = loss_func(logits_src2tgt, labels_index, rt[srcs_index[:, 0]], rs[tgts_index])
-                loss2 = 0
-                if srcs_index.shape[1] > 1:
-                  loss2 = loss_func(logits_tgt2src, labels_index, rs[tgts_index[:, 0]], rt[srcs_index])
-                  loss = (loss1 + loss2) / 2
-                else:
-                  loss = loss1
-                
-                loss.backward()
-                optimizer.step()
-                #scheduler.step()
-                optimizer.zero_grad()
-                global_step += 1
-                #self._liner_adjust_lr(optimizer, total_step, 0.01, 0.0001, global_step)
-                print('In epoch {}, step: {}, loss: {:.5f}, loss1: {:.5f}, loss2: {:.5f}, lr: {:.8f} '.format(
-                  e, step, loss, loss1, loss2, optimizer.state_dict()['param_groups'][0]['lr']))
-
+            loss1 = loss_func(logits_src2tgt, labels_index, rt[srcs_index[:, 0]], rs[tgts_index])
+            loss2 = 0
+            if srcs_index.shape[1] > 1:
+              loss2 = loss_func(logits_tgt2src, labels_index, rs[tgts_index[:, 0]], rt[srcs_index])
+              loss = (loss1 + loss2) / 2
+            else:
+              loss = loss1
+            
+            loss.backward()
+            optimizer.step()
+            #scheduler.step()
+            optimizer.zero_grad()
+            global_step += 1
+            #self._liner_adjust_lr(optimizer, total_step, 0.01, 0.0001, global_step)
+            print('In epoch {}, step: {}, loss: {:.5f}, loss1: {:.5f}, loss2: {:.5f}, lr: {:.8f} '.format(
+              e, step, loss, loss1, loss2, optimizer.state_dict()['param_groups'][0]['lr']))
+            
             # evaluate test set
-            if e % self.eval_every_epoch == 0 or e == self.epochs - 1:
-              model.eval()
-              #val_src = train_src
-              #val_src2tgts = train_src2tgts
-              print(f'In epoch {e} evaluate:')
-              if torch_orig_xw is not None and torch_orig_zw is not None:
-                acc, scores_result, tgts_result = self.eval(torch_orig_xw, torch_orig_zw, eval_src, eval_src2tgts)
-              else:
-                acc, scores_result, tgts_result = self.eval(src_x, tgt_x, eval_src, eval_src2tgts)
+          if e % self.eval_every_epoch == 0 or e == self.epochs - 1:
+            model.eval()
+            #val_src = train_src
+            #val_src2tgts = train_src2tgts
+            print(f'In epoch {e} evaluate:')
+            if torch_orig_xw is not None and torch_orig_zw is not None:
+              acc, scores_result, tgts_result = self.eval(torch_orig_xw, torch_orig_zw, eval_src, eval_src2tgts)
+            else:
+              acc, scores_result, tgts_result = self.eval(src_x, tgt_x, eval_src, eval_src2tgts)
 
-              if best_val_acc < acc:
-                if acc[0] - save_best_acc[0] > 0.001:
-                  self.save()
-                  save_best_acc = acc
-                best_val_acc = acc
-                best_epoch = e
-
-              print(f"best result at epoch {best_epoch}: {best_val_acc}")
+            if best_val_acc < acc:
+              if acc[0] - save_best_acc[0] > 0.001:
+                self.save()
+                save_best_acc = acc
+              best_val_acc = acc
+              best_epoch = e
+            print(f"best result at epoch {best_epoch}: {best_val_acc}")
         self.best_val_acc = best_val_acc
               
     def eval(self, src_x, tgt_x, val_src, val_src2tgts):
       tgts_result = []
       scores_result = []
       eval_bs = 24
-      rt, rs = self._calc_r_in_csls(src_x, tgt_x, knn=10)
+      rt, rs, _ = self._calc_r_in_csls(src_x, tgt_x, knn=10)
       for i in range(0, len(val_src), eval_bs):
         j = min(i + eval_bs, len(val_src))
         bs_pred_result = self.predict(src_x, tgt_x, val_src[i:j])
