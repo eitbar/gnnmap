@@ -78,7 +78,8 @@ class DssmDatasets(Dataset):
           if negtgts_prob is not None:
             hard_neg_tgts_list = get_rand_list_with_p(negtgts, min(self.hard_neg_per_pos, len(negtgts)), negtgts_prob)
           else:
-            hard_neg_tgts_list = random.sample(negtgts, min(self.hard_neg_per_pos, len(negtgts)))
+            #hard_neg_tgts_list = random.sample(negtgts, min(self.hard_neg_per_pos, len(negtgts)))
+            hard_neg_tgts_list = negtgts[:self.hard_neg_per_pos]
           hard_neg_tgts_set = set(hard_neg_tgts_list)
         else:
           hard_neg_tgts_list = negtgts
@@ -230,6 +231,8 @@ class GDSSM(nn.Module):
         src_list_norm = F.normalize(src_list, dim=2)
         sim_tgt2src = torch.matmul(pos_tgt_norm.unsqueeze(1), src_list_norm.transpose(1,2))
 
+
+
         logits_src2tgt = sim_src2tgt.squeeze()
         logits_tgt2src = sim_tgt2src.squeeze()    
         return logits_src2tgt, logits_tgt2src
@@ -240,7 +243,7 @@ class DssmTrainer:
                   device='gpu', epochs=100, eval_every_epoch=5, lr=0.0001, train_batch_size=256,
                   model_save_file='tmp_model.pickle', is_single_tower=False, shuffle_in_train=True,
                   random_neg_per_pos=256, hard_neg_per_pos=256, hard_neg_random=True, 
-                  update_neg_every_epoch=1, loss_metric="cos"):
+                  update_neg_every_epoch=1, random_warmup_epoches=0, loss_metric="cos"):
         # train config
         self.epochs = epochs
         self.eval_every_epoch = eval_every_epoch
@@ -254,6 +257,7 @@ class DssmTrainer:
         self.hard_neg_random = hard_neg_random
         self.shuffle_in_train = shuffle_in_train
         self.update_neg_every_epoch = update_neg_every_epoch
+        self.random_warmup_epoches = random_warmup_epoches
         # model config
         self.model = GDSSM(src_in_feat_dim, tgt_in_feat_dim, h_feat_dim, is_single_tower)
         #self.loss_func = nn.CrossEntropyLoss()
@@ -355,14 +359,16 @@ class DssmTrainer:
               sim_y2x = sim.transpose(0, 1)
             else:
               sim_x2y = sim * 2 - rt[:, None] - rs
-              sim_y2x = sim.transpose(0, 1) - rs[:, None] - rt            
-            print(train_dataset.sample2negtgts[tuple(train_dataset.datas[0])][:50])
-            print(train_dataset.sample2negtgts[tuple(train_dataset.datas[1])][:50])
-            print(len(train_dataset.sample2negtgts[tuple(train_dataset.datas[2])]))
+              sim_y2x = sim.transpose(0, 1) * 2 - rs[:, None] - rt            
+
             train_dataset.update_hard_neg(sim_x2y, sim_y2x)
-            print(train_dataset.sample2negtgts[tuple(train_dataset.datas[0])][:50])
-            print(train_dataset.sample2negtgts[tuple(train_dataset.datas[1])][:50])
-            print(len(train_dataset.sample2negtgts[tuple(train_dataset.datas[2])]))
+          
+          if e < self.random_warmup_epoches:
+            train_dataset.hard_neg_per_pos = 0
+            train_dataset.random_neg_per_pos = 512
+          else:
+            train_dataset.hard_neg_per_pos = 256
+            train_dataset.random_neg_per_pos = 256            
 
           model.train()
           for step, batch in enumerate(train_dataloader):
