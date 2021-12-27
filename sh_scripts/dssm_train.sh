@@ -2,16 +2,14 @@ CUDA_VISIBLE_DEVICES=3 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5
                                             --val_dict "./data/en-zh/en-zh.5000-6500.txt" \
                                             --in_src "./data/en-zh/wiki.10k.en.vec" \
                                             --in_tar "./data/en-zh/wiki.10k.zh.vec" \
-                                            --out_src "./data/en-zh/en.whitening.tmp3.vec" \
-                                            --out_tar "./data/en-zh/zh.whitening.tmp3.vec" \
-                                            --model_filename "./data/en-zh/ENZH-model.tmp3.pickle" \
+                                            --out_src "./data/en-zh/en.whitening.tmp7.vec" \
+                                            --out_tar "./data/en-zh/zh.whitening.tmp7.vec" \
+                                            --model_filename "./data/en-zh/ENZH-model.tmp7.pickle" \
                                             --train_batch_size 256 \
                                             --train_epochs 200 \
-                                            --loss_metric "cos" \
-                                            --whitening_sort \
+                                            --loss_metric "csls" \
                                             --shuffle_in_train \
                                             --eval_every_epoch 1 \
-                                            --use_whitening "post" \
                                             --whitening_data "train" \
                                             --random_neg_per_pos 256 \
                                             --hard_neg_per_pos 256 \
@@ -20,7 +18,7 @@ CUDA_VISIBLE_DEVICES=3 python dssm_train.py --train_dict "./data/en-zh/en-zh.0-5
                                             --hard_neg_sampling_threshold -10 \
                                             --hard_neg_top_k 500 \
                                             --hard_neg_random \
-                                            --update_neg_every_epoch 0 \
+                                            --update_neg_every_epoch 1 \
                                             --random_warmup_epoches 0 \
                                             --h_dim 300 \
                                             --lr 0.001

@@ -170,6 +170,60 @@ class DssmDatasets(Dataset):
         for (pos_src, pos_tgt) in self.datas:
           self.sample2negsrcs[(pos_src, pos_tgt)] = tgt2hard_neg_candi[pos_tgt]
               
+    def update_hard_neg_v2(self, similarity_x2y_cos, similarity_y2x_cos=None, similarity_x2y_csls=None, similarity_y2x_csls=None):
+      neg_candi_size = max([len(_) + 3 for _ in self.sample2negtgts.values()])
+      src2hard_neg_candi = {}
+      _, index_x2y = torch.sort(similarity_x2y_cos, descending=True, dim=1)
+      index_x2y = index_x2y.cpu().numpy().tolist()
+      for src in self.src2gold:
+        neg_candi = index_x2y[src][:neg_candi_size]
+        neg_candi = [_ for _ in neg_candi if _ not in self.src2gold[src]]
+        src2hard_neg_candi[src] = neg_candi
+
+      _, index_x2y = torch.sort(similarity_x2y_csls, descending=True, dim=1)
+      index_x2y = index_x2y.cpu().numpy().tolist()
+      for src in self.src2gold:
+        neg_candi = index_x2y[src][:neg_candi_size]
+        neg_candi = [_ for _ in neg_candi if _ not in self.src2gold[src]]
+
+        neg_candi1 = list(set(src2hard_neg_candi[src][:int(neg_candi_size // 2)] + neg_candi[:int(neg_candi_size // 2)]))
+        neg_candi2 = list(set(src2hard_neg_candi[src][int(neg_candi_size // 2):] + neg_candi[int(neg_candi_size // 2):]))
+        for _ in neg_candi2:
+          if len(neg_candi1) >= neg_candi_size:
+            break
+          if _ not in neg_candi1:
+            neg_candi1.append(_)
+        src2hard_neg_candi[src] = neg_candi1   
+
+      for (pos_src, pos_tgt) in self.datas:
+        self.sample2negtgts[(pos_src, pos_tgt)] = src2hard_neg_candi[pos_src]
+      if self.sample2negsrcs is not None and similarity_y2x_cos is not None:
+        _, index_y2x = torch.sort(similarity_y2x_cos, descending=True, dim=1)
+        index_y2x = index_y2x.cpu().numpy().tolist()
+        tgt2hard_neg_candi = {}
+        for tgt in self.tgt2gold:
+          neg_candi = index_y2x[tgt][:neg_candi_size]
+          neg_candi = [_ for _ in neg_candi if _ not in self.tgt2gold[tgt]]
+          tgt2hard_neg_candi[tgt] = neg_candi
+
+        _, index_y2x = torch.sort(similarity_y2x_csls, descending=True, dim=1)
+        index_y2x = index_y2x.cpu().numpy().tolist()
+        for tgt in self.tgt2gold:
+          neg_candi = index_y2x[tgt][:neg_candi_size]
+          neg_candi = [_ for _ in neg_candi if _ not in self.tgt2gold[tgt]]
+          neg_candi1 = list(set(tgt2hard_neg_candi[src][:int(neg_candi_size // 2)] + neg_candi[:int(neg_candi_size // 2)]))
+          neg_candi2 = list(set(tgt2hard_neg_candi[src][int(neg_candi_size // 2):] + neg_candi[int(neg_candi_size // 2):]))
+          for _ in neg_candi2:
+            if len(neg_candi1) >= neg_candi_size:
+              break
+            if _ not in neg_candi1:
+              neg_candi1.append(_)
+          tgt2hard_neg_candi[src] = neg_candi1        
+
+
+        for (pos_src, pos_tgt) in self.datas:
+          self.sample2negsrcs[(pos_src, pos_tgt)] = tgt2hard_neg_candi[pos_tgt]
+      
 
 
 
@@ -231,10 +285,20 @@ class GDSSM(nn.Module):
         src_list_norm = F.normalize(src_list, dim=2)
         sim_tgt2src = torch.matmul(pos_tgt_norm.unsqueeze(1), src_list_norm.transpose(1,2))
 
+        src_hidden_norm = F.normalize(src_h)
+        tgt_hidden_norm = F.normalize(tgt_h)
+        # size n1 * n2
+        sim_matrix = torch.matmul(src_hidden_norm, tgt_hidden_norm.transpose(0,1))
+        sim_src_topk, _ = torch.topk(sim_matrix, 10, dim=1)
+        rt = torch.mean(sim_src_topk, dim=1)
+        sim_tgt_topk, _ = torch.topk(sim_matrix.transpose(0,1), 10, dim=1)
+        rs = torch.mean(sim_tgt_topk, dim=1)
 
+        srcs_rt = rt[srcs_index]
+        tgts_rs = rs[tgts_index]
 
-        logits_src2tgt = sim_src2tgt.squeeze()
-        logits_tgt2src = sim_tgt2src.squeeze()    
+        logits_src2tgt = sim_src2tgt.squeeze() * 2 - srcs_rt[:, 0:1] - tgts_rs
+        logits_tgt2src = sim_tgt2src.squeeze() * 2 - tgts_rs[:, 0:1] - srcs_rt    
         return logits_src2tgt, logits_tgt2src
 
 
@@ -273,11 +337,7 @@ class DssmTrainer:
 
     def _bpr_loss_func(self, logits, labels_index, rt, rs):
         
-        if self.loss_metric == "csls":
-          new_logits = logits * 2 - rt[:, None] - rs
-        else:
-          new_logits = logits
-        
+        new_logits = logits
         pos_si = new_logits[:, 0]
         neg_si = new_logits[:, 1:]
         diff = pos_si[:, None] - neg_si
@@ -354,14 +414,12 @@ class DssmTrainer:
             rt, rs, sim = self._calc_r_in_csls(src_x, tgt_x)
 
           if self.update_neg_every_epoch > 0 and e % self.update_neg_every_epoch == 0:
-            if self.loss_metric == "cos":
-              sim_x2y = sim
-              sim_y2x = sim.transpose(0, 1)
-            else:
-              sim_x2y = sim * 2 - rt[:, None] - rs
-              sim_y2x = sim.transpose(0, 1) * 2 - rs[:, None] - rt            
-
-            train_dataset.update_hard_neg(sim_x2y, sim_y2x)
+            #if self.loss_metric == "cos":
+            sim_x2y_cos = sim
+            sim_y2x_cos = sim.transpose(0, 1)
+            sim_x2y_csls = sim * 2 - rt[:, None] - rs
+            sim_y2x_csls = sim.transpose(0, 1) * 2 - rs[:, None] - rt
+            train_dataset.update_hard_neg_v2(sim_x2y_cos, sim_y2x_cos, sim_x2y_csls, sim_y2x_csls)
           
           if e < self.random_warmup_epoches:
             train_dataset.hard_neg_per_pos = 0
@@ -425,11 +483,11 @@ class DssmTrainer:
       tgts_result = []
       scores_result = []
       eval_bs = 24
-      rt, rs, _ = self._calc_r_in_csls(src_x, tgt_x, knn=10)
+      #rt, rs, _ = self._calc_r_in_csls(src_x, tgt_x, knn=10)
       for i in range(0, len(val_src), eval_bs):
         j = min(i + eval_bs, len(val_src))
         bs_pred_result = self.predict(src_x, tgt_x, val_src[i:j])
-        bs_pred_result = bs_pred_result * 2 - rt[val_src[i:j], None] - rs
+        #bs_pred_result = bs_pred_result * 2 - rt[val_src[i:j], None] - rs
         #bs_tgts_result = torch.argsort(bs_pred_result, descending=True, dim=1).cpu().numpy().tolist()
         bs_score_result, bs_tgts_result = torch.sort(bs_pred_result, descending=True, dim=1)
         bs_score_result = bs_score_result.cpu().numpy().tolist()
